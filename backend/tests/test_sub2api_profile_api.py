@@ -36,6 +36,11 @@ class Sub2apiProfileApiTests(unittest.TestCase):
     def test_profile_crud_endpoint_roundtrip(self):
         sites = self.client.get("/api/sub2api/sites")
         self.assertEqual(sites.status_code, 200)
+        self.assertEqual(len(sites.json()["sites"]), 7)
+        self.assertTrue(
+            all(str(item["default_aff_code"]).strip() for item in sites.json()["sites"]),
+            "每个已验证站点都必须保留作者邀请 Aff 默认值",
+        )
         self.assertEqual(
             {item["key"] for item in sites.json()["sites"]},
             {
