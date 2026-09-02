@@ -1,0 +1,58 @@
+# Sub2API Native source-build deployment.
+# Run from deploy/; the repository root remains the build context.
+name: sub2api-native
+
+services:
+  sub2api-native:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      network: host
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+    image: sub2api-native:local
+    pull_policy: never
+    container_name: sub2api-native
+    restart: unless-stopped
+    # Fresh installs use this file; after migration the persisted runtime.env
+    # may be the sole credential source.
+    env_file:
+      - path: ./outlookemail.env
+        required: false
+    ports:
+      - "${SUB2API_WEB_PORT:-8787}:8787"
+      # Native OutlookEmail UI/API; keep the second port instead of adding a proxy.
+      - "${OUTLOOKEMAIL_BIND_HOST:-127.0.0.1}:${OUTLOOKEMAIL_PORT:-15000}:5000"
+    environment:
+      TZ: ${TZ:-UTC}
+      SUB2API_WEB_COOKIE_SECURE: ${SUB2API_WEB_COOKIE_SECURE:-0}
+      SUB2API_FORCE_HEADED: "1"
+      SUB2API_GATE_L_MAX_COUNT: ${SUB2API_GATE_L_MAX_COUNT:-1}
+      SUB2API_CONFIG_FILE: /app/data/config.json
+      SUB2API_DOCKER_PROXY_HOST: host.docker.internal
+      SUB2API_OUTLOOKEMAIL_API_BASE: http://127.0.0.1:5000
+      OUTLOOKEMAIL_DATA_DIR: /app/data/outlookemail
+      OUTLOOKEMAIL_RUNTIME_ENV: /app/data/outlookemail/runtime.env
+      OUTLOOKEMAIL_PUBLIC_PORT: ${OUTLOOKEMAIL_PORT:-15000}
+      OUTLOOKEMAIL_PUBLIC_HOST: ${OUTLOOKEMAIL_PUBLIC_HOST:-127.0.0.1}
+      XVFB_SCREEN: ${XVFB_SCREEN:-1920x1080x24}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+    shm_size: ${SUB2API_SHM_SIZE:-1gb}
+    security_opt:
+      - seccomp=unconfined
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; [urllib.request.urlopen(url, timeout=3).read() for url in ('http://127.0.0.1:8787/api/health', 'http://127.0.0.1:5000/')]"
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3

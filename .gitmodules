@@ -1,0 +1,3 @@
+[submodule "vendor/outlookEmail"]
+	path = vendor/outlookEmail
+	url = https://github.com/assast/outlookEmail.git

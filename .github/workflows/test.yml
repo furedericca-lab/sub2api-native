@@ -1,0 +1,67 @@
+# Test-only CI. This repository builds and deploys images locally only;
+# never add Docker builds, GHCR login/push, image publication, or releases.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# The mailbox gate test renders synthetic Compose files with the installed
+# Docker CLI only; it never builds, creates, starts, or mutates a resource.
+jobs:
+  deployment-gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Run read-only mailbox handoff gate fixtures
+        run: bash deploy/test-check-mailbox-handoff.sh
+
+  backend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Verify pinned OutlookEmail submodule
+        run: |
+          git submodule status --recursive
+          test -f vendor/outlookEmail/requirements.txt
+          test -z "$(git -C vendor/outlookEmail status --porcelain)"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install backend dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt pytest httpx
+      - name: Compile backend packages
+        run: python -m compileall -q backend docker/config_bootstrap.py
+      - name: Run backend tests
+        run: python -m pytest backend/tests -q
+
+  frontend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: front
+      - name: Typecheck frontend
+        run: npx tsc --noEmit
+        working-directory: front
+      - name: Build frontend
+        run: npm run build
+        working-directory: front

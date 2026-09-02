@@ -1,0 +1,61 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+*.txt
+!requirements.txt
+
+config.json
+config.local.json
+config.local.*
+.env
+!.env.example
+# 本地需求与改动记录，不提交仓库
+CHANGELOG_REQUESTS.md
+# 本地设计、验收和运维记录，不发布到公开仓库
+.wiki/
+.scopes/
+# 兼容旧版根目录认证文件；新版使用 data/web_auth.json
+web_auth.json
+web_auth.tmp
+*.bak
+
+*.log
+# 运行数据与日志与前后端代码分离
+data/*
+!data/README.md
+logs/*
+!logs/README.md
+# 旧版 OutlookEmail 独立数据源（迁移完成前保留，永不提交）
+outlookemail-data/
+# 调试产物（页面 dump 可能含真实账号信息）
+artifacts/
+# Operator-provided test scripts/configs may contain live endpoints or secrets.
+operator-input/
+
+.DS_Store
+.idea/
+.vscode/
+
+# 归档目录（冗余/调试文件，待确认后删除）
+_archive/
+# 本地 IDE 配置
+.claude/
+
+# Web console
+front/node_modules/
+
+# TypeScript 增量构建缓存
+*.tsbuildinfo
+
+# OutlookEmail 本地部署密钥（从 outlookemail.env.example 复制后填写）
+outlookemail.env
+
+# 本地部署与测试输入（可能包含环境地址或凭据）
+deploy/.env
+deploy/outlookemail.env
