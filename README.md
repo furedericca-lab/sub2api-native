@@ -46,7 +46,7 @@ OutlookEmail 保持 pinned Git submodule 和原生管理界面。两个应用使
 Python 虚拟环境、独立 SQLite 数据库，只通过 HTTP API 交互；不需要 Nginx、
 Supervisor 或数据库合并。
 
-## 截图
+## 界面截图
 
 <table>
   <tr>
