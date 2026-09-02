@@ -268,6 +268,35 @@ The fixture matrix covers loopback direct mode, LAN IP, reachable hostname,
 LAN plus loopback public target (reject), missing/empty public target
 (reject), and wildcard public targets (reject).
 
+## Read-only Gate L assertion
+
+check-gate-l.sh asserts the batch registration ceiling in the final rendered
+Compose configuration equals the expected ceiling:
+
+~~~text
+rendered SUB2API_GATE_L_MAX_COUNT == expected == 1
+~~~
+
+The default expectation is the fail-closed value 1, matching the runtime default
+in backend/web/application.py gate_l_max_count. The assertion reads the
+rendered configuration, never deploy/.env text and never an assumed default:
+code and Compose both default to 1, but one deploy/.env or shell override can
+silently raise the ceiling to 1000, so "the default is correct" is not evidence
+about this deployment. Missing, empty, non-numeric, zero, out-of-range,
+conflicting across services, or mismatched rendered values all fail closed.
+
+Raising the expectation above 1 requires the Gate L R2 live acceptance (a
+count=2 second account with a clean browser identity whose cookies and
+sessionStorage do not inherit the first account) and an explicit
+--acceptance-ack. Without that flag a raised expectation is itself an error, and
+the flag never hides a rendered/expected mismatch. update.sh runs the assertion
+before build and again before recreate, with SUB2API_GATE_L_EXPECTED and
+SUB2API_GATE_L_ACCEPTANCE_ACK as the only ways to aim it elsewhere.
+
+Like the mailbox gate, it only runs docker compose config --format json and jq:
+it never contacts a container, reads a credential file, or creates Docker
+resources. Its fixtures live in backend/tests/test_deploy_determinism.py.
+
 ## Build and start
 
 The shortest supported local flow is:
@@ -276,11 +305,13 @@ The shortest supported local flow is:
 git submodule sync --recursive
 git submodule update --init --recursive
 
+deploy/check-gate-l.sh
 deploy/check-mailbox-handoff.sh
 docker compose -f deploy/compose.yaml config --quiet
 docker compose -f deploy/docker-compose.yml config --quiet
 docker compose -f deploy/compose.yaml build --pull=false
 
+deploy/check-gate-l.sh
 deploy/check-mailbox-handoff.sh
 docker compose -f deploy/docker-compose.yml up -d --no-build
 ~~~
@@ -338,7 +369,23 @@ atomically updates runtime.env without modifying the upstream database.
 Historical migrations are not a routine deployment step. For an older
 installation, stop all writers, create a restricted backup, and verify
 PRAGMA integrity_check (and PRAGMA foreign_key_check where applicable) before
-starting the new image. Registration schema v2, Relay schema v3, and the
+starting the new image.
+
+Never pass an unexpanded glob to a command that can create a file. When no
+database matches, the shell hands the asterisk through unchanged, so an
+integrity check aimed at every database under the data root instead creates one
+zero-byte file named literally for that pattern, reports ok, and exits 0: the
+check looks like it passed while leaving an artifact behind. Enumerate real
+paths instead, from a listing or an explicit allowlist:
+
+~~~bash
+find data -maxdepth 3 -name '*.sqlite3' -print0 \
+  | xargs -0 -r -n1 sqlite3 '{}' 'PRAGMA integrity_check;'
+~~~
+
+The same rule covers touch, cp, mv, tee, dd, scp, and rsync. A stray
+metacharacter filename under data/ is this defect; the guard test in
+backend/tests/test_deploy_determinism.py reproduces it and fails if one returns. Registration schema v2, Relay schema v3, and the
 canonical account key at data/accounts/api_keys.key are current contracts;
 missing keys or failed migrations must fail closed rather than generate
 replacements.
@@ -382,6 +429,7 @@ python -m compileall -q backend docker/config_bootstrap.py
 python -m pytest backend/tests -q
 (cd front && npx tsc --noEmit && npm run build)
 bash deploy/test-check-mailbox-handoff.sh
+deploy/check-gate-l.sh
 docker compose -f deploy/compose.yaml config --quiet
 docker compose -f deploy/docker-compose.yml config --quiet
 git submodule status --recursive
@@ -396,7 +444,8 @@ For a running stack, confirm all of the following at the effective boundary:
 - 8787/api/health and native OutlookEmail :15000/ are reachable;
 - the real mailbox settings button produces the correct LAN or public-host
   launch URL in a browser;
-- all four compatibility-smoke HTTP checks pass;
+- all four compatibility-smoke HTTP checks pass, and the fan-out emails probe
+  reports ok rather than an unverified tail-latency warning;
 - Camoufox headed smoke passes;
 - SQLite integrity and stable account/group counts;
 - no credential values appear in logs and restart count is expected;
@@ -452,5 +501,10 @@ git submodule update --remote as part of a runtime deployment.
   intentionally outside the contract.
 - A Camoufox CLI exit code alone does not prove browser installation.
 - Build proxy values belong only at the host BuildKit boundary.
-- front/dist is generated output, not frontend source.
+- front/dist is generated output, not frontend source, and is not tracked. Run
+  npm run build before serving the console from a host checkout; the image
+  builds it from front/src.
+- A fixed smoke budget on the Microsoft/Graph fan-out endpoint produces false
+  failures on healthy deployments: judge the contract, and give the fan-out its
+  own budget plus one retry.
 - Do not merge SQLite databases or add an in-container process manager.

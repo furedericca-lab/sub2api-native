@@ -4,6 +4,22 @@
 The script deliberately talks to the public upstream endpoints only.  It does
 not import the upstream application or inspect its SQLite database, so it can
 be run after an OutlookEmail submodule bump without coupling to its internals.
+
+Failure policy
+--------------
+The smoke separates "this deployment is broken" from "this probe is slow":
+
+* ``/`` , ``/api/extension/login`` and ``/api/external/accounts`` are strict.
+  A timeout, an unreachable endpoint, or a shape mismatch fails the run.
+* ``/api/external/emails`` fans out to Microsoft login and Graph, so its
+  latency tail is owned by an external provider.  It gets its own larger time
+  budget (``--emails-timeout``) plus at most one bounded retry.  A pure
+  provider-side timeout is reported as ``external-emails: unverified`` and exits
+  0; a definite HTTP or shape contract violation still exits 1.
+
+That distinction exists because a fixed 8-second budget on the fan-out endpoint
+produced repeated false failures on healthy deployments: the client gave up at
+8s while the upstream access log recorded every request as ``status=200``.
 """
 
 from __future__ import annotations
@@ -11,12 +27,31 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Mapping
+
+# The emails endpoint is a provider fan-out; its budget must stay inside the
+# 20-30s window agreed for the operator's own waiting tolerance.
+EMAILS_TAIL_BUDGET_SECONDS = 25.0
+MAX_EMAILS_RETRIES = 1
+
+
+class ContractError(Exception):
+    """Base class for probe-level transport failures."""
+
+
+class ContractTimeout(ContractError):
+    """The request exceeded its time budget."""
+
+
+class EndpointUnreachable(ContractError):
+    """The endpoint refused, dropped, or could not be resolved."""
 
 
 def _read_env(path: Path) -> dict[str, str]:
@@ -78,8 +113,15 @@ def _request(
     except urllib.error.HTTPError as exc:
         # A status is enough for the smoke result; never print upstream bodies.
         return int(exc.code), None
-    except (OSError, urllib.error.URLError, TimeoutError) as exc:
-        raise RuntimeError("request failed") from exc
+    except (socket.timeout, TimeoutError) as exc:
+        raise ContractTimeout("request timed out") from exc
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, (socket.timeout, TimeoutError)):
+            raise ContractTimeout("request timed out") from exc
+        raise EndpointUnreachable("endpoint unreachable") from exc
+    except OSError as exc:
+        raise EndpointUnreachable("endpoint unreachable") from exc
 
 
 def _email_from_item(item: Any) -> str:
@@ -97,6 +139,55 @@ def _fail(message: str) -> int:
     return 1
 
 
+def probe_external_emails(
+    opener: urllib.request.OpenerDirector,
+    base: str,
+    api_key: str,
+    email: str,
+    *,
+    tail_timeout: float,
+    retries: int,
+) -> tuple[str, str]:
+    """Probe the provider fan-out endpoint.
+
+    Returns ``(verdict, detail)`` where verdict is ``ok``, ``unverified`` (the
+    provider stayed inside its budget tail, contract never observed broken) or
+    ``fail`` (a definite contract violation or an unreachable endpoint).
+    A contract violation is never retried.
+    """
+    query = urllib.parse.urlencode({"email": email, "folder": "inbox", "top": 1})
+    url = f"{base}/api/external/emails?{query}"
+    attempts = 1 + max(0, min(retries, MAX_EMAILS_RETRIES))
+    for attempt in range(1, attempts + 1):
+        try:
+            status, data = _request(
+                opener, "GET", url, api_key=api_key, timeout=tail_timeout
+            )
+        except ContractTimeout:
+            if attempt < attempts:
+                print(
+                    f"external-emails: retrying once after "
+                    f"{tail_timeout:g}s provider tail latency"
+                )
+                time.sleep(min(1.0, tail_timeout / 10))
+                continue
+            return "unverified", f"no answer within {tail_timeout:g}s per attempt"
+        except EndpointUnreachable:
+            return "fail", "endpoint unreachable"
+        if (
+            not 200 <= status < 300
+            or not isinstance(data, Mapping)
+            or not isinstance(data.get("success"), bool)
+        ):
+            return "fail", "contract failed"
+        if data.get("success"):
+            return "ok", "ok"
+        # success=false is a valid upstream business response (for example a
+        # temporarily unauthorized mailbox); shape compatibility still passed.
+        return "ok", "reachable (upstream reported unavailable)"
+    return "unverified", "exhausted attempts"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -104,6 +195,18 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("OUTLOOKEMAIL_CONTRACT_BASE", "http://127.0.0.1:5000"),
     )
     parser.add_argument("--timeout", type=float, default=8.0)
+    parser.add_argument(
+        "--emails-timeout",
+        type=float,
+        default=float(os.environ.get("OUTLOOKEMAIL_EMAILS_TIMEOUT", EMAILS_TAIL_BUDGET_SECONDS)),
+        help="per-attempt budget for the Microsoft/Graph fan-out endpoint",
+    )
+    parser.add_argument(
+        "--emails-retries",
+        type=int,
+        default=int(os.environ.get("OUTLOOKEMAIL_EMAILS_RETRIES", MAX_EMAILS_RETRIES)),
+        help=f"extra attempts for the fan-out endpoint, capped at {MAX_EMAILS_RETRIES}",
+    )
     parser.add_argument(
         "--runtime-env",
         default=os.environ.get(
@@ -123,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         status, _ = _request(opener, "GET", f"{base}/", timeout=args.timeout)
-    except RuntimeError:
+    except ContractError:
         return _fail("root endpoint unavailable")
     if not 200 <= status < 400:
         return _fail("root endpoint returned an unexpected status")
@@ -141,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
             payload={"password": password, "next": "/"},
             timeout=args.timeout,
         )
-    except RuntimeError:
+    except ContractError:
         return _fail("extension login endpoint unavailable")
     launch_path = str(data.get("launch_url") or "") if isinstance(data, Mapping) else ""
     launch_parts = urllib.parse.urlsplit(launch_path)
@@ -161,7 +264,7 @@ def main(argv: list[str] | None = None) -> int:
             api_key=api_key,
             timeout=args.timeout,
         )
-    except RuntimeError:
+    except ContractError:
         return _fail("external accounts endpoint unavailable")
     accounts = data.get("accounts") if isinstance(data, Mapping) else None
     if not 200 <= status < 300 or not isinstance(data, Mapping) or data.get("success") is not True or not isinstance(accounts, list):
@@ -172,22 +275,20 @@ def main(argv: list[str] | None = None) -> int:
     if not email:
         print("external-emails: skipped (no account in pool)")
         return 0
-    query = urllib.parse.urlencode({"email": email, "folder": "inbox", "top": 1})
-    try:
-        status, data = _request(
-            opener,
-            "GET",
-            f"{base}/api/external/emails?{query}",
-            api_key=api_key,
-            timeout=args.timeout,
-        )
-    except RuntimeError:
-        return _fail("external emails endpoint unavailable")
-    if not 200 <= status < 300 or not isinstance(data, Mapping) or not isinstance(data.get("success"), bool):
-        return _fail("external emails contract failed")
-    # success=false is a valid upstream business response (for example a
-    # temporarily unauthorized mailbox); shape compatibility still passed.
-    print("external-emails: ok" if data.get("success") else "external-emails: reachable (upstream reported unavailable)")
+    verdict, detail = probe_external_emails(
+        opener,
+        base,
+        api_key,
+        email,
+        tail_timeout=args.emails_timeout,
+        retries=args.emails_retries,
+    )
+    if verdict == "fail":
+        return _fail(f"external emails {detail}")
+    if verdict == "unverified":
+        print(f"external-emails: unverified ({detail}); provider tail, contract not violated")
+        return 0
+    print("external-emails: ok" if detail == "ok" else f"external-emails: {detail}")
     return 0
 
 

@@ -37,6 +37,22 @@ git submodule update --init --recursive
 docker compose -f deploy/compose.yaml config --quiet || fail "compose.yaml 校验失败"
 docker compose -f deploy/docker-compose.yml config --quiet || fail "docker-compose.yml 校验失败"
 
+# Gate L 断言（fail closed）：批量注册上限必须以 rendered 实际值为准。
+# 代码默认与 Compose 默认都是 1，但 deploy/.env 或宿主环境的一行覆盖可以把
+# 它静默改成 1000；只相信默认值等于没有门禁。期望值来自
+# SUB2API_GATE_L_EXPECTED（默认 1）。提高到 1 以上需要 Gate L R2（count=2
+# 第二账户全新浏览器身份，cookies/sessionStorage 不继承第一账户）的 Live
+# 验收已完成，并显式设置 SUB2API_GATE_L_ACCEPTANCE_ACK=1。
+GATE_L_EXPECTED="${SUB2API_GATE_L_EXPECTED:-1}"
+GATE_L_ACK_ARGS=()
+if [[ "${SUB2API_GATE_L_ACCEPTANCE_ACK:-0}" == "1" ]]; then
+  GATE_L_ACK_ARGS=(--acceptance-ack)
+  echo "[update] Gate L 期望值已由显式验收旗标提高到 ${GATE_L_EXPECTED}"
+fi
+deploy/check-gate-l.sh --expected "$GATE_L_EXPECTED" "${GATE_L_ACK_ARGS[@]}" \
+  deploy/compose.yaml deploy/docker-compose.yml \
+  || fail "Gate L 门禁未通过，拒绝 build/recreate"
+
 # 部署门禁（fail closed）：在任何 build / recreate 之前校验邮箱免密跳转目标。
 # 只校验 rendered Compose，不看 deploy/.env 原文：代码默认正确 != 本机部署已升级到新契约。
 # 语义、原因与 fixture 测试见 deploy/check-mailbox-handoff.sh 和 deploy/README.md。
@@ -51,6 +67,11 @@ docker compose -f compose.yaml build --pull=false
 # 不可逆的本地生产动作，必须在 apply 前重新断言。
 ./check-mailbox-handoff.sh compose.yaml docker-compose.yml \
   || fail "build 后邮箱跳转门禁未通过，拒绝 recreate"
+
+# Gate L 同样在 recreate 前重新断言，与邮箱门禁同级。
+./check-gate-l.sh --expected "$GATE_L_EXPECTED" "${GATE_L_ACK_ARGS[@]}" \
+  compose.yaml docker-compose.yml \
+  || fail "build 后 Gate L 门禁未通过，拒绝 recreate"
 
 docker compose -f docker-compose.yml up -d --no-build
 
