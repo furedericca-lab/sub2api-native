@@ -1,8 +1,8 @@
 # Sub2API Native
 
-Sub2API Native 是一个面向本地和局域网部署的 Sub2API 管理控制台。它把多个
-已部署站点的账户、密钥和注册流程集中到一个界面，并提供统一的 Responses API
-入口。邮箱能力由随项目固定版本部署的 OutlookEmail 提供。
+Sub2API Native 是一个面向本地或 Docker 部署的 Sub2API 聚合管理控制台。它把多个
+已部署 Sub2API 站点的账户、密钥和注册流程集中到一个管理界面中，并提供统一的
+API 入口。邮箱管理能力由 OutlookEmail 提供。
 
 ## 适用场景
 
