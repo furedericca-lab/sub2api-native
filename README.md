@@ -98,12 +98,16 @@ OUTLOOKEMAIL_PUBLIC_HOST；不要使用通配地址作为跳转目标。
 并同步密钥；在密钥池选择聚合密钥；最后在 API 聚合页面启用 Relay 并使用客户端
 凭据调用服务。
 
-## API
+## API 服务
 
 机器端点保持精简，只提供：
 
 - GET /v1/models
 - POST /v1/responses
+
+## 许可证
+
+此项目根据 Apache License 2.0 许可证授权 - 有关详细信息，请参阅 [LICENSE](LICENSE) 文件。
 
 ## 数据与升级
 
