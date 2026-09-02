@@ -45,8 +45,8 @@ Profile（站点）
 ~~~
 
 OutlookEmail 保持 pinned Git submodule 和原生管理界面。两个应用使用独立的
-Python 虚拟环境、独立 SQLite 数据库，只通过 HTTP API 交互；不需要 Nginx、
-Supervisor 或数据库合并。
+Python 虚拟环境、独立 SQLite 数据库，只通过 HTTP API 交互。镜像不内置进程
+管理器或反向代理；需要公网入口时，可在容器外使用 Nginx，详见部署说明。
 
 ## 界面截图
 
@@ -93,8 +93,9 @@ docker compose -f docker-compose.yml up -d --no-build
 
 打开 http://主机地址:8787 进入控制台。邮箱设置中的“邮箱账户管理”会打开
 原生 OutlookEmail 界面，默认端口是 15000。需要局域网访问时，在 deploy/.env
-中分别设置可监听的 OUTLOOKEMAIL_BIND_HOST 和浏览器可访问的
-OUTLOOKEMAIL_PUBLIC_HOST；不要使用通配地址作为跳转目标。
+中分别设置可监听的 OUTLOOKEMAIL_BIND_HOST、浏览器可访问的
+OUTLOOKEMAIL_PUBLIC_HOST 和跳转端口 OUTLOOKEMAIL_PUBLIC_PORT；不要使用通配
+地址作为跳转目标。
 
 通常的使用顺序是：在站点池添加或确认站点，在站点行发起注册；在账户池检查账户
 并同步密钥；在密钥池选择聚合密钥；最后在 API 聚合页面启用 Relay 并使用客户端
@@ -104,7 +105,7 @@ OUTLOOKEMAIL_PUBLIC_HOST；不要使用通配地址作为跳转目标。
 
 ⭐ 如果这个项目对你有帮助，请给个 Star 支持一下！你的 Star 是我持续更新的动力！ ⭐
 
-已验证站点默认填写作者的邀请 Aff。如果觉得这个项目帮到了您，可选择保留并使用
+已验证站点默认填写作者的邀请 Aff，如果觉得这个项目帮到了您，可选择保留并使用
 默认 Aff；您的每一次充值，都会为项目持续维护添一份动力。您也可以选择清空默认
 Aff。作者会默默放下咖啡杯，并含泪继续维护项目(ಥ﹏ಥ)
 
@@ -125,4 +126,5 @@ Aff。作者会默默放下咖啡杯，并含泪继续维护项目(ಥ﹏ಥ)
 保持独立。OutlookEmail 的版本由 vendor/outlookEmail 的具体 commit 固定；升级
 时更新该 commit 并重新本地构建。
 
-开发、构建、部署、升级、迁移和恢复契约见 [AGENTS.md](AGENTS.md)。
+开发与维护规则见 [AGENTS.md](AGENTS.md)；部署、反向代理、升级、迁移和恢复
+契约见 [deploy/README.md](deploy/README.md)。
