@@ -1,0 +1,142 @@
+name: Docker Build and Push
+
+# This workflow is deliberately manual. A local operator triggers it with:
+# gh workflow run docker-build-push.yml --ref main -f tag=latest
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Image channel or release tag (for example latest or v1.0.0)
+        required: true
+        default: latest
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  verify:
+    name: Verify source and frontend
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source and pinned submodule
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Verify submodule is pinned and clean
+        run: |
+          git submodule status --recursive
+          test -f vendor/outlookEmail/requirements.txt
+          test -z "$(git -C vendor/outlookEmail status --porcelain)"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install backend dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt pytest httpx
+
+      - name: Compile backend packages
+        run: python -m compileall -q backend docker/config_bootstrap.py
+
+      - name: Run backend tests
+        run: python -m pytest backend/tests -q
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: front/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: front
+
+      - name: Typecheck frontend
+        run: npx tsc --noEmit
+        working-directory: front
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: front
+
+      - name: Run read-only mailbox handoff fixtures
+        run: bash deploy/test-check-mailbox-handoff.sh
+
+  build-push:
+    name: Build and push image
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source and pinned submodule
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^[a-z0-9][a-z0-9._-]{0,127}$ ]]; then
+            echo "Invalid image tag" >&2
+            exit 1
+          fi
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ inputs.tag }}
+            type=sha,format=long,prefix=sha-
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Build and push linux/amd64 image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          network: host
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=sub2api-native
+          cache-to: type=gha,mode=max,scope=sub2api-native
+
+      - name: Report published digest
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "Published digest: $DIGEST"
+          {
+            echo "### Docker image"
+            echo "- Image: \`${IMAGE_NAME}@${DIGEST}\`"
+            echo "- Tag: \`${{ inputs.tag }}\`"
+            echo "- Platform: \`linux/amd64\`"
+          } >> "$GITHUB_STEP_SUMMARY"

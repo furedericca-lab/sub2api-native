@@ -1,5 +1,5 @@
-# Test-only CI. This repository builds and deploys images locally only;
-# never add Docker builds, GHCR login/push, image publication, or releases.
+# Test-only CI. Docker image publication is handled separately by the manual
+# workflow in docker-build-push.yml and is never triggered by a commit.
 name: tests
 
 on:
