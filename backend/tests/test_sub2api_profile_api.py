@@ -59,6 +59,9 @@ class Sub2apiProfileApiTests(unittest.TestCase):
             ["qq.com", "gmail.com", "126.com", "163.com", "*.edu.cn"],
         )
         catalog = {item["key"]: item for item in sites.json()["sites"]}
+        true_sota = catalog["true-sota"]
+        self.assertIn("*.edu.cn", true_sota["email_suffix_whitelist"])
+        self.assertFalse(any(domain.endswith(".edu.cn") and not domain.startswith("*.") for domain in true_sota["email_suffix_whitelist"]))
         self.assertEqual(catalog["xxcy"]["email_suffix_whitelist"], ["qq.com"])
         self.assertEqual(
             catalog["sharezzz"]["email_suffix_whitelist"],
