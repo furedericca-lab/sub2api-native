@@ -68,6 +68,17 @@ class ComposePortBindingTests(unittest.TestCase):
                     f"{name}: OutlookEmail 原生端口必须默认绑定回环并仅允许显式覆盖",
                 )
 
+    def test_public_mail_port_is_independent_from_published_port(self):
+        for name in ("compose.yaml", "docker-compose.yml"):
+            with self.subTest(compose=name):
+                data = _parse_compose(REPO_ROOT / "deploy" / name)
+                environment = data["services"]["sub2api-native"]["environment"]
+                self.assertEqual(
+                    environment["OUTLOOKEMAIL_PUBLIC_PORT"],
+                    "${OUTLOOKEMAIL_PUBLIC_PORT:-${OUTLOOKEMAIL_PORT:-15000}}",
+                    f"{name}: browser-facing mailbox port must be independently configurable",
+                )
+
     def test_outlook_email_bind_host_example_is_loopback(self):
         env_example = (REPO_ROOT / "deploy" / ".env.example").read_text(
             encoding="utf-8"

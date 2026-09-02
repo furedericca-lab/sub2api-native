@@ -27,7 +27,9 @@ services:
       SUB2API_OUTLOOKEMAIL_API_BASE: http://127.0.0.1:5000
       OUTLOOKEMAIL_DATA_DIR: /app/data/outlookemail
       OUTLOOKEMAIL_RUNTIME_ENV: /app/data/outlookemail/runtime.env
-      OUTLOOKEMAIL_PUBLIC_PORT: ${OUTLOOKEMAIL_PORT:-15000}
+      # Browser-facing port may differ when an external reverse proxy fronts
+      # the published native port (for example, public HTTP port 80).
+      OUTLOOKEMAIL_PUBLIC_PORT: ${OUTLOOKEMAIL_PUBLIC_PORT:-${OUTLOOKEMAIL_PORT:-15000}}
       OUTLOOKEMAIL_PUBLIC_HOST: ${OUTLOOKEMAIL_PUBLIC_HOST:-127.0.0.1}
       XVFB_SCREEN: ${XVFB_SCREEN:-1920x1080x24}
     extra_hosts:

@@ -38,7 +38,7 @@ fi
 
 # PUBLIC 基本非法目标：空值、未指定地址，或明显不是 host 值。
 is_invalid_public_target() {
-  local original="$1" value
+  local original="$1" value ip_candidate
   value="${original,,}"
   while [[ "$value" == *. ]]; do value="${value%.}"; done
   case "$value" in
@@ -50,8 +50,19 @@ is_invalid_public_target() {
   # Keep the gate aligned with the backend host contract: a host, not a URL,
   # credential-bearing authority, or value containing control/space characters.
   case "$original" in
-    *[[:space:]]*|*/*|*\\*|*@*|*\?*|*\#*) return 0 ;;
+    *[[:space:]]*|*/*|*\\*|*@*|*\?*|*\#*|*%*|*\[*|*\]*) return 0 ;;
   esac
+  # Reject every textual spelling of the IPv6 unspecified address, not only
+  # the common `::` form. IPv6 values are otherwise limited to host characters.
+  if [[ "$value" == *:* ]]; then
+    ip_candidate="$value"
+    [[ "$ip_candidate" =~ ^[0-9a-f:.]+$ ]] || return 0
+    [[ "$ip_candidate" =~ [1-9a-f] ]] || return 0
+    return 1
+  fi
+  # Match the same DNS-label shape used by backend/mailbox/service.py.
+  [[ "$value" =~ ^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$ ]] || return 0
+  [[ "$value" != *..* ]] || return 0
   return 1
 }
 
@@ -81,7 +92,7 @@ render_json() {
 }
 
 check_file() {
-  local compose_file="$1" json target_count public published
+  local compose_file="$1" json target_count public public_port published
   [[ -f "$compose_file" ]] || fail "$compose_file 不存在"
 
   if ! json="$(render_json "$compose_file")"; then
@@ -122,6 +133,18 @@ check_file() {
         | tostring | gsub("^[[:space:]]+|[[:space:]]+$"; "")
       ] | first // ""
     ' <<<"$json")"
+    public_port="$(jq -r '
+      [ .services[]? as $service
+        | select(any(($service.ports // [])[]?; (.target | tostring) == "5000"))
+        | ($service.environment // {})
+        | if type == "object" then (.OUTLOOKEMAIL_PUBLIC_PORT // "")
+          elif type == "array" then
+            (map(select(startswith("OUTLOOKEMAIL_PUBLIC_PORT="))
+              | sub("^[^=]*="; "")) | first // "")
+          else "" end
+        | tostring | gsub("^[[:space:]]+|[[:space:]]+$"; "")
+      ] | first // ""
+    ' <<<"$json")"
   else
     published="<none>"
     # 没有 5000 映射时，仍从 rendered service environment 读取并校验 PUBLIC。
@@ -135,9 +158,23 @@ check_file() {
         | tostring | gsub("^[[:space:]]+|[[:space:]]+$"; "")
       ] | map(select(. != "")) | first // ""
     ' <<<"$json")"
+    public_port="$(jq -r '
+      [ .services[]? | (.environment // {})
+        | if type == "object" then (.OUTLOOKEMAIL_PUBLIC_PORT // "")
+          elif type == "array" then
+            (map(select(startswith("OUTLOOKEMAIL_PUBLIC_PORT="))
+              | sub("^[^=]*="; "")) | first // "")
+          else "" end
+        | tostring | gsub("^[[:space:]]+|[[:space:]]+$"; "")
+      ] | map(select(. != "")) | first // ""
+    ' <<<"$json")"
   fi
 
   [[ -n "$public" ]] || fail "$compose_file: OUTLOOKEMAIL_PUBLIC_HOST 渲染为空，浏览器跳转目标未知"
+  public_port="${public_port:-15000}"
+  if [[ ! "$public_port" =~ ^[0-9]{1,5}$ ]] || (( 10#$public_port < 1 || 10#$public_port > 65535 )); then
+    fail "$compose_file: OUTLOOKEMAIL_PUBLIC_PORT 必须是 1-65535 的端口"
+  fi
   if is_invalid_public_target "$public"; then
     fail "$compose_file: OUTLOOKEMAIL_PUBLIC_HOST 不是可用的明确浏览器目标"
   fi

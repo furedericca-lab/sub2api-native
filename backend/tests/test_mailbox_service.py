@@ -88,6 +88,34 @@ class MailboxServiceResolutionTests(unittest.TestCase):
                     with self.assertRaises(service.MailboxServiceError):
                         service.management_url(host, "/extension-login/tok")
 
+    def test_management_url_omits_standard_http_port_for_public_subdomain(self):
+        with mock.patch.dict(
+            service.os.environ,
+            {
+                "OUTLOOKEMAIL_PUBLIC_PORT": "80",
+                "OUTLOOKEMAIL_PUBLIC_HOST": "mail.example.test",
+            },
+            clear=False,
+        ):
+            self.assertEqual(
+                service.management_url("untrusted.example", "/extension-login/tok"),
+                "http://mail.example.test/extension-login/tok",
+            )
+
+    def test_management_url_keeps_nonstandard_public_port(self):
+        with mock.patch.dict(
+            service.os.environ,
+            {
+                "OUTLOOKEMAIL_PUBLIC_PORT": "15000",
+                "OUTLOOKEMAIL_PUBLIC_HOST": "mail.example.test",
+            },
+            clear=False,
+        ):
+            self.assertEqual(
+                service.management_url("untrusted.example", "/extension-login/tok"),
+                "http://mail.example.test:15000/extension-login/tok",
+            )
+
     def test_management_url_rejects_wildcard_public_host(self):
         with mock.patch.dict(service.os.environ, {"OUTLOOKEMAIL_PUBLIC_HOST": "0.0.0.0"}):
             with self.assertRaises(service.MailboxServiceError):

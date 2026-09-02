@@ -16,9 +16,9 @@ command -v jq >/dev/null 2>&1 || { echo "jq 不可用" >&2; exit 1; }
 WORKDIR="$(mktemp -d)"
 trap 'find "$WORKDIR" -mindepth 1 -depth -delete; rmdir "$WORKDIR"' EXIT
 
-# fixture(<name>, <host_ip | __OMIT__>, <public host | __NONE__ => 缺失>, <mail?>)
+# fixture(<name>, <host_ip | __OMIT__>, <public host | __NONE__ => 缺失>, <mail?>, <public port | __OMIT__>)
 fixture() {
-  local name="$1" host_ip="$2" public="$3" mail="${4:-yes}" file="$WORKDIR/$1.yaml"
+  local name="$1" host_ip="$2" public="$3" mail="${4:-yes}" public_port="${5:-__OMIT__}" file="$WORKDIR/$1.yaml"
   {
     printf '%s\n' 'services:' '  fixture:' '    image: fixture:local'
     printf '%s\n' '    ports:'
@@ -36,6 +36,9 @@ fixture() {
     else
       printf '      OUTLOOKEMAIL_PUBLIC_HOST: "%s"\n' "$public"
     fi
+    if [[ "$public_port" != __OMIT__ ]]; then
+      printf '      OUTLOOKEMAIL_PUBLIC_PORT: "%s"\n' "$public_port"
+    fi
   } > "$file"
 }
 
@@ -50,10 +53,15 @@ fixture lan_missing_public   192.0.2.153   __NONE__ yes
 fixture lan_empty_public     192.0.2.153   "" yes
 fixture wildcard_public      192.0.2.153   0.0.0.0 yes
 fixture wildcard_public_v6   192.0.2.153   "[::]" yes
+fixture wildcard_public_v6_full 192.0.2.153 0:0:0:0:0:0:0:0 yes
 fixture lan_ipv6_loopback    192.0.2.153   "[::1]" yes
 fixture lan_localhost        192.0.2.153   localhost yes
+fixture malformed_public     192.0.2.153   mail..example.test yes
 fixture no_mail_wildcard     __OMIT__      0.0.0.0 no
 fixture no_mail_empty        __OMIT__      "" no
+fixture public_http_port     127.0.0.1     mail.example.test yes 80
+fixture invalid_public_port  127.0.0.1     mail.example.test yes 65536
+fixture zero_public_port     127.0.0.1     mail.example.test yes 0
 
 case_run() {
   local name="$1" expect="$2" reason="$3" output rc got verdict
@@ -82,10 +90,15 @@ case_run lan_missing_public  fail 'LAN 发布但 PUBLIC 缺失'
 case_run lan_empty_public    fail 'LAN 发布但 PUBLIC 为空串'
 case_run wildcard_public     fail 'PUBLIC 为 IPv4 未指定地址'
 case_run wildcard_public_v6  fail 'PUBLIC 为 IPv6 未指定地址'
+case_run wildcard_public_v6_full fail 'PUBLIC 为完整 IPv6 未指定地址'
 case_run lan_ipv6_loopback   fail 'LAN 发布却指向 IPv6 回环'
 case_run lan_localhost       fail 'LAN 发布却指向 localhost'
+case_run malformed_public    fail 'PUBLIC 不是合法主机名'
 case_run no_mail_wildcard    fail '无端口映射也不得接受 wildcard PUBLIC'
 case_run no_mail_empty       fail '无端口映射也不得接受空 PUBLIC'
+case_run public_http_port    pass '标准 HTTP 公网端口可配置'
+case_run invalid_public_port fail 'PUBLIC_PORT 超出范围'
+case_run zero_public_port    fail 'PUBLIC_PORT 不能为零'
 
 echo '== 真实 Compose 配置（只读渲染）=='
 if production_output="$($GATE 2>&1)"; then

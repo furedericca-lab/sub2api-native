@@ -39,7 +39,7 @@ docker compose -f deploy/docker-compose.yml config --quiet || fail "docker-compo
 
 # 部署门禁（fail closed）：在任何 build / recreate 之前校验邮箱免密跳转目标。
 # 只校验 rendered Compose，不看 deploy/.env 原文：代码默认正确 != 本机部署已升级到新契约。
-# 语义、原因与 fixture 测试见 deploy/check-mailbox-handoff.sh 和 ../AGENTS.md。
+# 语义、原因与 fixture 测试见 deploy/check-mailbox-handoff.sh 和 deploy/README.md。
 # 人工执行 docker compose up -d --no-build 之前也必须先跑同一个脚本。
 deploy/check-mailbox-handoff.sh deploy/compose.yaml deploy/docker-compose.yml \
   || fail "邮箱跳转门禁未通过，拒绝 build/recreate"

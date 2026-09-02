@@ -385,7 +385,13 @@ def management_url(host: str, path: str, *, scheme: str = "http") -> str:
     normalized_scheme = str(scheme or "http").strip().lower()
     if normalized_scheme not in {"http", "https"}:
         normalized_scheme = "http"
-    return f"{normalized_scheme}://{valid_host}:{public_port()}{validate_launch_path(path)}"
+    port = public_port()
+    # Keep reverse-proxied public URLs canonical while retaining an explicit
+    # port for non-standard direct/LAN deployments.
+    port_suffix = "" if (normalized_scheme == "http" and port == 80) or (
+        normalized_scheme == "https" and port == 443
+    ) else f":{port}"
+    return f"{normalized_scheme}://{valid_host}{port_suffix}{validate_launch_path(path)}"
 
 
 __all__ = [
