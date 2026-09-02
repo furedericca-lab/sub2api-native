@@ -15,7 +15,12 @@ deploy/.env
 outlookemail-data
 data/outlookemail
 config.json
+config.local.*
 web_auth.json
+web_auth.tmp
+CHANGELOG_REQUESTS.md
+_archive
+operator-input
 *.log
 *.bak
 *.db

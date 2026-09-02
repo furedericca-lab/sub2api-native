@@ -13,7 +13,12 @@ data
 logs
 outlookemail-data
 config.json
+config.local.*
 web_auth.json
+web_auth.tmp
+CHANGELOG_REQUESTS.md
+_archive
+operator-input
 .env
 **/.env
 *.env
