@@ -2,7 +2,9 @@
 
 Sub2API Native 是一个面向 Docker 部署的 Sub2API 聚合管理控制台。它把多个已部署
 Sub2API 站点的账户、密钥和注册流程集中到一个管理界面中，并提供统一的 API 入口。
-邮箱管理能力由 OutlookEmail 提供。
+邮箱管理能力由 OutlookEmail 提供，当前支持 Outlook/Hotmail、Gmail、QQ、163、126、
+Yahoo、阿里邮箱以及自定义 IMAP 邮箱，同时集成 GPTMail、DuckMail、Cloudflare Temp
+Email 多提供商临时邮箱能力。
 
 ## 适用场景
 
@@ -51,7 +53,7 @@ Supervisor 或数据库合并。
 <table>
   <tr>
     <td align="center">
-      <strong>站点池</strong><br>
+      <strong>站点管理</strong><br>
       <img src="img/site-pool.png" alt="站点池与账户、密钥概览" width="420">
     </td>
     <td align="center">
@@ -106,7 +108,7 @@ OUTLOOKEMAIL_PUBLIC_HOST；不要使用通配地址作为跳转目标。
 默认 Aff；您的每一次充值，都会为项目持续维护添一份动力。您也可以选择清空默认
 Aff。作者会默默放下咖啡杯，并含泪继续维护项目(ಥ﹏ಥ)
 
-## API 服务
+## API服务
 
 机器端点保持精简，只提供：
 

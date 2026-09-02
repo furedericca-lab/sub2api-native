@@ -14,6 +14,7 @@ config.json
 config.local.json
 config.local.*
 .env
+*.env
 !.env.example
 # 本地需求与改动记录，不提交仓库
 CHANGELOG_REQUESTS.md
@@ -35,6 +36,14 @@ logs/*
 outlookemail-data/
 # 调试产物（页面 dump 可能含真实账号信息）
 artifacts/
+# Visual/browser exports may contain account or mailbox data.
+output/
+coverage/
+htmlcov/
+*.coverage
+*.har
+*.trace
+*.dump
 # Operator-provided test scripts/configs may contain live endpoints or secrets.
 operator-input/
 
@@ -59,3 +68,24 @@ outlookemail.env
 # 本地部署与测试输入（可能包含环境地址或凭据）
 deploy/.env
 deploy/outlookemail.env
+
+# Generic local credentials, sessions, certificates, and database artifacts.
+# Keep these ignored even when a tool writes them outside the canonical data
+# tree; examples and source fixtures should use explicit non-secret names.
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.key
+*.pem
+*.p12
+*.pfx
+*.cookie
+*.session
+*.secret
+*.token
+*.credentials
+*.credentials.*
+.secrets/
+credentials/

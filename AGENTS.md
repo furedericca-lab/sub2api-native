@@ -105,9 +105,11 @@ docker compose -f deploy/docker-compose.yml up -d --no-build
 ~~~
 
 Both Compose files must stay aligned for environment, mounts, ports,
-healthcheck, container name, and pull_policy: never. Do not use docker
-compose pull, remote build services, registry publication, or runtime image
-updates.
+healthcheck, container name, and pull_policy: never. For local Compose, do not
+use docker compose pull, remote build services, registry pulls, or runtime
+image updates. Optional registry publication is isolated to the explicit
+manual `.github/workflows/docker-build-push.yml` workflow below and is never
+part of the local deployment path.
 
 The source-build file keeps build.network: host and forwards only the shell's
 HTTP_PROXY, HTTPS_PROXY, and NO_PROXY as build arguments. Proxy values are
@@ -131,9 +133,25 @@ Each environment must pass its own pip check. Camoufox installation is valid
 only after resolving its executable path; a successful CLI return code alone
 is insufficient.
 
-CI is test-only. The workflow may install dependencies, compile Python,
-execute pytest, run the read-only gate fixtures, and build the frontend. It
-must not build, publish, or deploy Docker images.
+The push/PR workflow is test-only: it may install dependencies, compile
+Python, execute pytest, run the read-only gate fixtures, and build the
+frontend. Docker image publication is intentionally separate and manual.
+
+`.github/workflows/docker-build-push.yml` runs only on `workflow_dispatch`,
+never on every commit or pull request. It repeats the source/submodule and
+application checks, then builds and publishes the pinned source as a
+`linux/amd64` image to `ghcr.io/furedericca-lab/sub2api-native`. The workflow
+uses the repository `GITHUB_TOKEN`; no credential belongs in the repository.
+The release tag is supplied explicitly by the operator, and the workflow also
+publishes an immutable full-commit `sha-<commit>` tag. Trigger it locally with:
+
+~~~bash
+gh workflow run docker-build-push.yml --ref main -f tag=latest
+~~~
+
+Local Docker Compose remains the normal deployment path. A registry image is
+an optional publication artifact, not a replacement for the local data and
+runtime contract.
 
 ## Production safety rules
 
