@@ -92,10 +92,8 @@ docker compose -f docker-compose.yml up -d --no-build
 ~~~
 
 打开 http://主机地址:8787 进入控制台。邮箱设置中的“邮箱账户管理”会打开
-原生 OutlookEmail 界面，默认端口是 15000。需要局域网访问时，在 deploy/.env
-中分别设置可监听的 OUTLOOKEMAIL_BIND_HOST、浏览器可访问的
-OUTLOOKEMAIL_PUBLIC_HOST 和跳转端口 OUTLOOKEMAIL_PUBLIC_PORT；不要使用通配
-地址作为跳转目标。
+原生 OutlookEmail 界面，默认端口是 15000。局域网访问、Nginx 反代和公网独立
+域名部署请按 [部署说明](deploy/README.md) 配置。
 
 通常的使用顺序是：在站点池添加或确认站点，在站点行发起注册；在账户池检查账户
 并同步密钥；在密钥池选择聚合密钥；最后在 API 聚合页面启用 Relay 并使用客户端
