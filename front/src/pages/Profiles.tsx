@@ -10,11 +10,28 @@ import { RegistrationRuntimePanel } from "@/pages/profiles/RegistrationRuntimePa
 
 const empty: Sub2apiProfileInput = { name: "", site_key: "", promo_code: "", invitation_code: "", aff_code: "", enabled: true };
 
+type ProfileForm = Sub2apiProfileInput & { id?: number; in_use?: boolean };
+
+function editableProfileInput(form: ProfileForm): Sub2apiProfileInput {
+  return {
+    name: form.name,
+    site_key: form.site_key,
+    promo_code: form.promo_code,
+    invitation_code: form.invitation_code,
+    aff_code: form.aff_code,
+    enabled: form.enabled,
+  };
+}
+
+function profileForm(item: Sub2apiProfile): ProfileForm {
+  return { ...editableProfileInput(item), id: item.id, in_use: item.in_use };
+}
+
 export function ProfilesPage() {
   const location = useLocation();
   const [items, setItems] = useState<Sub2apiProfile[]>([]);
   const [sites, setSites] = useState<VerifiedSite[]>([]);
-  const [form, setForm] = useState<(Sub2apiProfileInput & { id?: number; in_use?: boolean }) | null>(null);
+  const [form, setForm] = useState<ProfileForm | null>(null);
   const { job, replaceJob } = useRegistrationJob();
   const [registrationProfile, setRegistrationProfile] = useState<Sub2apiProfile | null>(null);
   const [registrationCount, setRegistrationCount] = useState("1");
@@ -69,8 +86,9 @@ export function ProfilesPage() {
     if (!form || busy) return;
     setBusy(true);
     try {
-      if (form.id) await api.sub2apiProfileUpdate(form.id, form);
-      else await api.sub2apiProfileCreate(form);
+      const input = editableProfileInput(form);
+      if (form.id) await api.sub2apiProfileUpdate(form.id, input);
+      else await api.sub2apiProfileCreate(input);
       setForm(null);
       await load();
       setToast("站点已保存");
@@ -187,7 +205,7 @@ export function ProfilesPage() {
                       <span className="text-xs text-slate-500">注册 · 登录 · 密钥管理{item.checkin_supported ? " · 签到" : ""}</span>
                       <div className="flex flex-wrap justify-end gap-1">
                         {runningThisSite ? <Button size="sm" variant="outline" onClick={viewRegistration}>查看</Button> : item.enabled ? <Button size="sm" variant="outline" disabled={registrationBlocked} title={registrationBlockedTitle} onClick={() => void openRegistration(item)}><Play className="h-4 w-4" />注册</Button> : <Button size="sm" variant="outline" disabled title="站点已停用"><Play className="h-4 w-4" />注册</Button>}
-                        <Button size="icon" variant="ghost" aria-label={`编辑 ${item.name}`} onClick={() => setForm({ ...item })}><Pencil className="h-4 w-4" /></Button>
+                        <Button size="icon" variant="ghost" aria-label={`编辑 ${item.name}`} onClick={() => setForm(profileForm(item))}><Pencil className="h-4 w-4" /></Button>
                         <Button size="icon" variant="ghost" aria-label={`删除 ${item.name}`} disabled={item.in_use} title={item.in_use ? "已有账户或注册记录，不能删除" : "删除站点"} onClick={() => void remove(item)}><Trash2 className="h-4 w-4" /></Button>
                       </div>
                     </div>
@@ -208,7 +226,7 @@ export function ProfilesPage() {
                       <td className="px-4 py-3 text-right"><Link className="font-medium text-sky-700 hover:underline" to={`/account-pool?profile=${item.id}`}>{item.account_count || 0}</Link></td>
                       <td className="px-4 py-3 text-right"><Link className="font-medium text-sky-700 hover:underline" to={`/api-keys?profile=${item.id}`}>{item.active_key_count || 0}<span className="font-normal text-slate-400"> / {item.key_count || 0}</span></Link></td>
                       <td className="px-4 py-3 text-xs text-slate-600">注册 · 登录 · 密钥管理{item.checkin_supported ? " · 签到" : ""}</td>
-                      <td className="px-4 py-3"><div className="flex justify-end gap-1">{runningThisSite ? <Button size="sm" variant="outline" onClick={viewRegistration}>查看</Button> : item.enabled ? <Button size="sm" variant="outline" disabled={registrationBlocked} title={registrationBlockedTitle} onClick={() => void openRegistration(item)}><Play className="h-4 w-4" />注册</Button> : <Button size="sm" variant="outline" disabled title="站点已停用"><Play className="h-4 w-4" />注册</Button>}<Button size="icon" variant="ghost" aria-label={`编辑 ${item.name}`} onClick={() => setForm({ ...item })}><Pencil className="h-4 w-4" /></Button><Button size="icon" variant="ghost" aria-label={`删除 ${item.name}`} disabled={item.in_use} title={item.in_use ? "已有账户或注册记录，不能删除" : "删除站点"} onClick={() => void remove(item)}><Trash2 className="h-4 w-4" /></Button></div></td>
+                      <td className="px-4 py-3"><div className="flex justify-end gap-1">{runningThisSite ? <Button size="sm" variant="outline" onClick={viewRegistration}>查看</Button> : item.enabled ? <Button size="sm" variant="outline" disabled={registrationBlocked} title={registrationBlockedTitle} onClick={() => void openRegistration(item)}><Play className="h-4 w-4" />注册</Button> : <Button size="sm" variant="outline" disabled title="站点已停用"><Play className="h-4 w-4" />注册</Button>}<Button size="icon" variant="ghost" aria-label={`编辑 ${item.name}`} onClick={() => setForm(profileForm(item))}><Pencil className="h-4 w-4" /></Button><Button size="icon" variant="ghost" aria-label={`删除 ${item.name}`} disabled={item.in_use} title={item.in_use ? "已有账户或注册记录，不能删除" : "删除站点"} onClick={() => void remove(item)}><Trash2 className="h-4 w-4" /></Button></div></td>
                     </tr>;
                   })}
                 </tbody>

@@ -1,3 +1,5 @@
+import { profileWritePayload } from "./profilePayload";
+
 export type JobStatus = {
   running: boolean;
   started_at?: number | null;
@@ -394,12 +396,12 @@ export const api = {
   sub2apiProfileCreate: (input: Sub2apiProfileInput) =>
     request<{ ok: boolean; profile: Sub2apiProfile }>("/api/sub2api/profiles", {
       method: "POST",
-      body: JSON.stringify(input),
+      body: JSON.stringify(profileWritePayload(input)),
     }),
   sub2apiProfileUpdate: (id: number, input: Partial<Sub2apiProfileInput>) =>
     request<{ ok: boolean; profile: Sub2apiProfile }>(`/api/sub2api/profiles/${id}`, {
       method: "PUT",
-      body: JSON.stringify(input),
+      body: JSON.stringify(profileWritePayload(input)),
     }),
   sub2apiProfileDelete: (id: number) =>
     request<{ ok: boolean; deleted: number }>(`/api/sub2api/profiles/${id}`, {
