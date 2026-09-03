@@ -12,7 +12,9 @@ import re
 import threading
 import time
 from contextlib import contextmanager
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional, Tuple
+
+from backend.shared.stages import LOG_BROWSER_LAUNCHING_PREFIX, STAGE_BROWSER_LAUNCHING
 
 
 class RegistrationJobCoordinator:
@@ -169,15 +171,19 @@ class RegistrationJobCoordinator:
         if snap and snap.get("running"):
             self._persist_snapshot(force=True)
 
-    def _update_progress_from_log(self, message: str) -> bool:
-        """根据日志更新进度；返回 completed_count 是否变化。"""
+    def _update_progress_from_log(self, message: str) -> Tuple[bool, bool]:
+        """根据日志更新进度；返回 (completed_count 是否变化, current_stage 是否变化)。"""
         text = str(message or "").strip()
         if not text:
-            return False
+            return False, False
 
-        changed = False
         with self._lock:
             before = self._completed_count
+            stage_before = self._current_stage
+            if LOG_BROWSER_LAUNCHING_PREFIX in text:
+                # 浏览器启动前的 GeoIP 下载窗口可达数分钟，先让阶段离开“任务启动中”，
+                # 避免慢速出口被当成死锁。
+                self._current_stage = STAGE_BROWSER_LAUNCHING
             if "开始第" in text and "个账号" in text:
                 self._current_stage = "注册中"
 
@@ -208,11 +214,12 @@ class RegistrationJobCoordinator:
                     else f"准备第 {self._completed_count + 1} 个账号"
                 )
             changed = self._completed_count != before
-        return changed
+            stage_changed = self._current_stage != stage_before
+        return changed, stage_changed
 
     def _append_log(self, message: str) -> None:
         text = str(message or "")
-        progress_changed = self._update_progress_from_log(text)
+        progress_changed, stage_changed = self._update_progress_from_log(text)
         with self._lock:
             self._log_seq += 1
             self._logs.append(
@@ -222,7 +229,9 @@ class RegistrationJobCoordinator:
                     "message": text,
                 }
             )
-        if progress_changed:
+        # 阶段变更频率低（每个任务几次），强制写入以保证落库的阶段与内存一致；
+        # 否则心跳紧跟启动写入时会被 1 秒节流吞掉，快照会整段下载时间停在“任务启动中”。
+        if progress_changed or stage_changed:
             self._persist_snapshot(force=True)
 
     def status(self) -> Dict[str, Any]:

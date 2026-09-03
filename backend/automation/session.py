@@ -31,6 +31,7 @@ from playwright.sync_api._generated import Playwright as _SyncPlaywright
 
 from backend.automation.page_adapter import BrowserAdapter, PageAdapter
 from backend.integrations.proxy import HTTP_PROXY_SCHEMES, parse_http_proxy_url
+from backend.shared.stages import LOG_BROWSER_LAUNCHING_PREFIX
 
 
 class IsolatedCamoufox(_Camoufox):
@@ -720,6 +721,41 @@ def _close_unwrapped_context(browser_context=None, lifecycle=None) -> None:
         pass
 
 
+# Camoufox 在 mmdb 缓存未命中（缺失或超过 30 天）时，会在 __enter__() 内先同步
+# 下载 MaxMind GeoLite2 IPv4+IPv6（约 45 MB），期间浏览器进程尚未出现、没有任何
+# 输出，从控制台看与死锁无异。启动前先打一行心跳，让日志和任务快照离开
+# “任务启动中”。
+GEOIP_DOWNLOAD_HINT = "约 45 MB"
+
+
+def _geoip_cache_ready() -> Optional[bool]:
+    """只读判定 Camoufox GeoIP mmdb 缓存状态。
+
+    True=可直接复用；False=未命中，启动将触发下载；None=无法判定（依赖或配置
+    不可读），按最保守的通用文案提示，绝不因为判定失败而谎报“缓存就绪”。
+    """
+    try:
+        from camoufox.geolocation import get_mmdb_path, needs_update
+
+        if needs_update():
+            return False
+        return all(get_mmdb_path(version).exists() for version in ("ipv4", "ipv6"))
+    except Exception:
+        return None
+
+
+def browser_launch_heartbeat(geoip_ready: Optional[bool] = None) -> str:
+    """浏览器启动前的心跳行，前缀供 Web 协调器识别“浏览器启动中”阶段。"""
+    if geoip_ready is False:
+        return (
+            f"{LOG_BROWSER_LAUNCHING_PREFIX}GeoIP 数据库缓存未命中，正在下载 "
+            f"MaxMind GeoLite2（{GEOIP_DOWNLOAD_HINT}，视出口带宽可能耗时数分钟）"
+        )
+    if geoip_ready is True:
+        return f"{LOG_BROWSER_LAUNCHING_PREFIX}GeoIP 数据库已就绪，正在启动 Camoufox 浏览器"
+    return f"{LOG_BROWSER_LAUNCHING_PREFIX}正在准备 Camoufox 浏览器与 GeoIP 数据库"
+
+
 def start_browser(log_callback=None, geoip_override: Optional[bool] = None) -> Tuple[object, object]:
     """启动 Camoufox 浏览器后端并返回共用页面适配对象。"""
     engine_label = "Camoufox"
@@ -736,6 +772,11 @@ def start_browser(log_callback=None, geoip_override: Optional[bool] = None) -> T
                 geoip_override=geoip_override,
             )
             profile_dir = getattr(_tls, "profile_dir", None)
+
+            # 必须在进入 __enter__() 之前发出：下载 GeoIP 数据库的阻塞就发生
+            # 在其内部，之后的任何日志都无法再解释这段静默窗口。
+            if log_callback:
+                log_callback(browser_launch_heartbeat(_geoip_cache_ready()))
 
             browser_context, lifecycle = _launch_camoufox_context(opts)
 
