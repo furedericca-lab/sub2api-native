@@ -12,7 +12,7 @@ import socket
 from typing import Callable, List, Tuple
 from urllib.parse import urlparse
 
-from backend.integrations.proxy import redact_proxy_text, resolve_proxy_url
+from backend.integrations.proxy import redact_proxy_text, redact_proxy_url, resolve_proxy_url
 from backend.mailbox.service import (
     resolve_api_base,
     resolve_legacy_session_cookie,
@@ -74,7 +74,7 @@ def check_proxy(proxy_url: str, http_get: Callable) -> CheckResult:
         host = u.hostname or "127.0.0.1"
         port = u.port or (443 if u.scheme == "https" else 80)
         if not _tcp_open(host, port):
-            return "代理", False, f"无法连接 {host}:{port}"
+            return "代理", False, "无法连接已配置代理"
         # 轻量探测 + 解析出口 IP，确认代理确实生效
         try:
             exit_ip = _trace_exit_ip(
@@ -82,12 +82,12 @@ def check_proxy(proxy_url: str, http_get: Callable) -> CheckResult:
             )
         except Exception as exc:
             # TCP 通但出站失败也提示
-            return "代理", False, f"TCP 通，出站探测失败: {redact_proxy_text(exc)}"
+            return "代理", False, f"TCP 通，出站探测失败: {redact_proxy_text(exc, (proxy_url,))}"
         if exit_ip:
-            return "代理", True, f"{host}:{port} 可用，出口IP {exit_ip}"
-        return "代理", True, f"{host}:{port} 可用（未解析到出口IP）"
+            return "代理", True, f"{redact_proxy_url(proxy_url)} 可用，出口IP {exit_ip}"
+        return "代理", True, f"{redact_proxy_url(proxy_url)} 可用（未解析到出口IP）"
     except Exception as exc:
-        return "代理", False, redact_proxy_text(exc)
+        return "代理", False, redact_proxy_text(exc, (proxy_url,))
 
 
 def check_browser_runtime() -> CheckResult:

@@ -30,7 +30,11 @@ from playwright._impl._transport import PipeTransport as _PwPipeTransport
 from playwright.sync_api._generated import Playwright as _SyncPlaywright
 
 from backend.automation.page_adapter import BrowserAdapter, PageAdapter
-from backend.integrations.proxy import HTTP_PROXY_SCHEMES, parse_http_proxy_url
+from backend.integrations.proxy import (
+    HTTP_PROXY_SCHEMES,
+    parse_http_proxy_url,
+    redact_proxy_url,
+)
 from backend.shared.stages import LOG_BROWSER_LAUNCHING_PREFIX
 
 
@@ -815,7 +819,7 @@ def start_browser(log_callback=None, geoip_override: Optional[bool] = None) -> T
                 proxy_options = opts.get("proxy") if isinstance(opts.get("proxy"), dict) else {}
                 proxy_server = str(proxy_options.get("server") or "").strip()
                 log_callback(
-                    f"[*] {engine_label} 网络: {'代理 ' + proxy_server if proxy_server else '直连（未配置代理）'}"
+                    f"[*] {engine_label} 网络: {'代理 ' + redact_proxy_url(proxy_server) if proxy_server else '直连（未配置代理）'}"
                 )
             if log_callback and profile_dir:
                 log_callback(f"[Debug] 当前浏览器资料目录: {profile_dir}")

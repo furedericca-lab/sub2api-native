@@ -33,6 +33,8 @@ services:
       SUB2API_CONFIG_FILE: /app/data/config.json
       SUB2API_DOCKER_PROXY_HOST: host.docker.internal
       SUB2API_OUTLOOKEMAIL_API_BASE: http://127.0.0.1:5000
+      # Vendor INFO logs include proxy endpoints; keep runtime logs endpoint-free.
+      LOG_LEVEL: WARNING
       OUTLOOKEMAIL_DATA_DIR: /app/data/outlookemail
       OUTLOOKEMAIL_RUNTIME_ENV: /app/data/outlookemail/runtime.env
       # Browser-facing port may differ when an external reverse proxy fronts

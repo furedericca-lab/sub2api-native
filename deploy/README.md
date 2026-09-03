@@ -74,6 +74,12 @@ reads those two values as data; it never sources arbitrary shell code. Do not
 print them or put them in a ticket, log, screenshot, image, scope, or wiki
 page.
 
+The standard Compose files pin the embedded OutlookEmail process to
+`LOG_LEVEL=WARNING`. Its vendor INFO diagnostics include proxy endpoints, so
+the production default keeps those values out of container logs. Sub2API
+browser and HTTP diagnostics also use protocol-only proxy labels; the complete
+proxy URL remains confined to the request and browser configuration paths.
+
 ## Configuration boundary
 
 The mailbox host and port variables have separate meanings:
@@ -448,7 +454,8 @@ For a running stack, confirm all of the following at the effective boundary:
   reports ok rather than an unverified tail-latency warning;
 - Camoufox headed smoke passes;
 - SQLite integrity and stable account/group counts;
-- no credential values appear in logs and restart count is expected;
+- no credential or proxy-endpoint values appear in logs and restart count is
+  expected;
 - the submodule is clean and the worktree contains only intentional changes;
 - the exact commit's GitHub Actions test workflow is green.
 

@@ -115,6 +115,18 @@ class ComposePortBindingTests(unittest.TestCase):
                     "${SUB2API_GATE_L_MAX_COUNT:-1}",
                 )
 
+    def test_embedded_outlookemail_logs_do_not_emit_proxy_endpoints(self):
+        """嵌入式 OutlookEmail 的 INFO 代理日志必须保持关闭。"""
+        for name in ("compose.yaml", "docker-compose.yml"):
+            with self.subTest(compose=name):
+                data = _parse_compose(REPO_ROOT / "deploy" / name)
+                env = data["services"]["sub2api-native"]["environment"]
+                self.assertEqual(
+                    env.get("LOG_LEVEL"),
+                    "WARNING",
+                    f"{name}: vendor INFO 日志不能暴露代理端点",
+                )
+
     def test_service_and_image_names_are_sub2api(self):
         data = _parse_compose(REPO_ROOT / "deploy" / "compose.yaml")
         self.assertEqual(data.get("name"), "sub2api-native")

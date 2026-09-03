@@ -83,16 +83,26 @@ class HttpProxyParsingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "百分号编码"):
             validate_http_proxy_url("http://user:bad/word@proxy.example.com:8080")
 
-    def test_proxy_credentials_are_redacted_for_display_and_log_text(self):
+    def test_proxy_endpoint_and_credentials_are_redacted_for_display_and_log_text(self):
         proxy = "http://user%40mail:p%40ss@proxy.example.com:8080"
         self.assertEqual(
             redact_proxy_url(proxy),
-            "http://***:***@proxy.example.com:8080",
+            "http://***",
         )
         message = redact_proxy_text(f"request failed via {proxy}")
         self.assertNotIn("user%40mail", message)
         self.assertNotIn("p%40ss", message)
-        self.assertIn("http://***:***@proxy.example.com:8080", message)
+        self.assertNotIn("proxy.example.com", message)
+        self.assertIn("http://***", message)
+
+        self.assertEqual(redact_proxy_url("http://proxy.example.com:8080"), "http://***")
+        self.assertNotIn(
+            "proxy.example.com",
+            redact_proxy_text(
+                "request failed via http://proxy.example.com:8080",
+                ("http://proxy.example.com:8080",),
+            ),
+        )
 
         malformed = redact_proxy_text(
             "failed via http://user:raw/secret@proxy.example.com:8080"

@@ -17,7 +17,7 @@ HTTP_PROXY_SCHEMES = frozenset({"http", "https"})
 
 _BAD_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _AUTHENTICATED_PROXY_IN_TEXT = re.compile(
-    r"([A-Za-z][A-Za-z0-9+.-]*://)([^\s]+)@"
+    r"([A-Za-z][A-Za-z0-9+.-]*://)[^\s]+@[^\s]+"
 )
 
 
@@ -100,34 +100,26 @@ def parse_http_proxy_url(proxy_url: str) -> dict[str, str]:
 
 
 def redact_proxy_url(proxy_url: str) -> str:
-    """Hide proxy userinfo while retaining a useful scheme/host/port display."""
+    """Return a log-safe proxy label without exposing its endpoint or credentials."""
     value = str(proxy_url or "").strip()
-    if not value or "@" not in value:
-        return value
-    has_scheme = "://" in value
+    if not value:
+        return ""
     try:
-        parsed = urlsplit(value if has_scheme else f"http://{value}")
-        if "@" not in parsed.netloc or not parsed.hostname:
-            raise ValueError("missing proxy host")
-        redacted = urlunsplit(
-            (
-                parsed.scheme,
-                f"***:***@{_proxy_host_port(parsed)}",
-                parsed.path,
-                parsed.query,
-                parsed.fragment,
-            )
-        )
-        return redacted if has_scheme else redacted.split("://", 1)[1]
+        parsed = urlsplit(value if "://" in value else f"http://{value}")
     except ValueError:
-        return _AUTHENTICATED_PROXY_IN_TEXT.sub(r"\1***:***@", value)
+        return "***"
+    scheme = parsed.scheme.lower()
+    return f"{scheme}://***" if scheme else "***"
 
 
-def redact_proxy_text(value: object) -> str:
-    """Redact authenticated proxy URLs embedded in log or exception text."""
-    return _AUTHENTICATED_PROXY_IN_TEXT.sub(
-        r"\1***:***@", str(value if value is not None else "")
-    )
+def redact_proxy_text(value: object, proxy_values: tuple[str, ...] = ()) -> str:
+    """Redact known proxy values and authenticated proxy URLs in text."""
+    text = str(value if value is not None else "")
+    for proxy_value in proxy_values:
+        raw = str(proxy_value or "").strip()
+        if raw:
+            text = text.replace(raw, redact_proxy_url(raw))
+    return _AUTHENTICATED_PROXY_IN_TEXT.sub(r"\1***", text)
 
 
 def resolve_proxy_url(proxy_url: str) -> str:

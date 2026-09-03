@@ -132,7 +132,7 @@ class ProxyRoutingTests(unittest.TestCase):
             gr._log_actual_http_route("GET", "http://mail.test/api/emails", proxies={})
 
         self.assertEqual(len(logs), 2)
-        self.assertIn("GET https://site.example/register -> 代理 http://127.0.0.1:7897", logs[0])
+        self.assertIn("GET https://site.example/register -> 代理 http://***", logs[0])
         self.assertIn("GET http://mail.test/api/emails -> 直连（不使用代理）", logs[1])
 
     def test_actual_http_route_log_redacts_proxy_credentials(self):
@@ -149,7 +149,8 @@ class ProxyRoutingTests(unittest.TestCase):
         self.assertEqual(len(logs), 1)
         self.assertNotIn("proxy-user", logs[0])
         self.assertNotIn("p%40ss", logs[0])
-        self.assertIn("代理 http://***:***@proxy.example.com:7897", logs[0])
+        self.assertNotIn("proxy.example.com", logs[0])
+        self.assertIn("代理 http://***", logs[0])
 
     def test_outlook_acquire_and_code_polling_use_direct_default_http(self):
         with mock.patch.object(
@@ -211,6 +212,8 @@ class ProxyRoutingTests(unittest.TestCase):
         with mock.patch.object(network_checks, "_tcp_open", return_value=True):
             _, ok, detail = network_checks.check_proxy(proxy, http_get)
         self.assertTrue(ok, detail)
+        self.assertNotIn("127.0.0.1", detail)
+        self.assertNotIn("7897", detail)
         self.assertEqual(
             http_get.call_args.kwargs["proxies"],
             {"http": proxy, "https": proxy},
