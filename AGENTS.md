@@ -36,8 +36,17 @@ SQLite ownership and exchange business data only through HTTP.
 
 ## Repository and source rules
 
-- Keep vendor/outlookEmail as a clean Git submodule at an explicit commit.
-  Never patch, fork, copy, or import its Python source into backend code.
+- vendor/outlookEmail is a maintained fork of assast/outlookEmail: the submodule's
+  origin is the fork and upstream is the original. Feature and fix work lands in the fork
+  as reviewed commits with tests and a CHANGELOG entry, and the superproject then pins it
+  by gitlink. This replaces the earlier blanket "never patch or fork" wording, which the
+  project had already moved past; the constraints that still hold are listed next.
+- Keep the submodule clean at that explicit commit. Never patch the copy inside a running
+  container or image, and never copy or import vendor Python source into backend code:
+  the two applications keep the documented HTTP boundary and independent databases.
+- Bring upstream changes in as a reviewed merge or rebase against upstream, not as an
+  edit made on top of the deployed tree, and never let a runtime git submodule update
+  --remote move the pin.
 - Initialize a checkout with git submodule update --init --recursive.
   The superproject gitlink, not an unpinned working tree, defines the deployed
   OutlookEmail version.
