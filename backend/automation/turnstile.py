@@ -237,14 +237,22 @@ def _try_click_turnstile_frame(log_callback: Optional[Callable[[str], None]] = N
         if log_callback:
             log_callback(f"[Debug] Turnstile iframe element 点击失败: {element_click_exc}")
 
-    # ---- 策略 3：page mouse 绝对坐标点击 ----
+    # ---- 策略 3：frame 坐标的 page 级点击（同样必须带超时）----
+    # 旧版本用 raw_page.mouse.click，那个 API 没有超时：上游给出人工交互挑战时
+    # 渲染主线程是卡的，它会挂 40+ 秒再把整个有界预算吞掉，还要靠看门狗杀浏览器
+    # 才能打断（浏览器一死，现场截图也拍不到）。今天所有成功日志都来自策略 1/2，
+    # 这条只贡献过挂死，因而不再用无限等待的 API。
     try:
         iframe_el = turnstile_frame.frame_element()
         box = iframe_el.bounding_box() if iframe_el else None
         if box and box["width"] > 0:
             px = box["x"] + 24
             py = box["y"] + box["height"] / 2
-            raw_page.mouse.click(px, py)
+            raw_page.locator("body").click(
+                position={"x": px, "y": py},
+                force=True,
+                timeout=2000,
+            )
             if log_callback:
                 log_callback(f"[*] 已在 page 级点击 Turnstile iframe ({px:.0f}, {py:.0f})")
             return
@@ -254,4 +262,4 @@ def _try_click_turnstile_frame(log_callback: Optional[Callable[[str], None]] = N
             log_callback("[Debug] Turnstile iframe 暂无尺寸（挑战页重建中），本轮不点击")
     except Exception as page_click_exc:
         if log_callback:
-            log_callback(f"[Debug] Turnstile page 级点击失败: {page_click_exc}")
+            log_callback(f"[Debug] Turnstile page 级点击失败: {str(page_click_exc)[:120]}")
