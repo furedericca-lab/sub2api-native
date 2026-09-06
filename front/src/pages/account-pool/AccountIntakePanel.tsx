@@ -9,6 +9,7 @@ import {
   TerminalSquare,
   TriangleAlert,
   Ban,
+  Trash2,
 } from "lucide-react";
 
 import { api, errorMessage, type AccountIntakeTask } from "@/lib/api";
@@ -47,6 +48,14 @@ function statusMeta(status: string) {
 function errorLabel(code: string) {
   return ERROR_LABELS[code] || code || "任务失败";
 }
+
+const FAILURE_STATUSES = new Set(["failed", "timeout"]);
+const PRUNABLE_STATUSES = new Set(["failed", "timeout", "cancelled"]);
+const PRUNED_LABELS: Record<string, string> = {
+  failed: "失败",
+  timeout: "超时",
+  cancelled: "已取消",
+};
 
 function successLine(task: AccountIntakeTask) {
   const discovered = task.summary?.discovered ?? 0;
@@ -102,6 +111,12 @@ export function AccountIntakePanel({ tasks, onOpenAccount, onChanged, onRefresh 
 
   if (!tasks.length) return null;
 
+  const prunable = tasks.filter((task) => PRUNABLE_STATUSES.has(task.status));
+  const prunableNote = prunable
+    .map((task) => PRUNED_LABELS[task.status])
+    .filter((label, index, list) => list.indexOf(label) === index)
+    .join("、");
+
   return (
     <section className="overflow-hidden rounded-lg border border-slate-200 bg-white">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
@@ -109,12 +124,33 @@ export function AccountIntakePanel({ tasks, onOpenAccount, onChanged, onRefresh 
           <h2 className="text-sm font-semibold">添加账户任务</h2>
           <p className="mt-0.5 text-xs text-slate-500">登录验证与密钥同步在后台执行，可以关闭弹窗继续其它操作。</p>
         </div>
-        <span className="text-xs text-slate-500">最近 {tasks.length} 条</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-500">最近 {tasks.length} 条</span>
+          {prunable.length ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              title={prunableNote ? `清除这些记录：${prunableNote}` : "清除已结束任务"}
+              disabled={busy === "prune"}
+              onClick={() =>
+                void run(
+                  "prune",
+                  () => api.pruneAccountIntakeTasks(),
+                  `已清除 ${prunable.length} 条已结束记录`,
+                )
+              }
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              清除失败记录
+            </Button>
+          ) : null}
+        </div>
       </div>
       <ul className="divide-y divide-slate-100">
         {tasks.map((task) => {
           const meta = statusMeta(task.status);
           const logs = logBuffers[task.id] || task.logs || [];
+          const lastLog = logs.length ? String(logs[logs.length - 1]?.message || "") : "";
           const showLogs = expanded[task.id] ?? (task.active || task.status !== "succeeded");
           return (
             <li key={task.id} className="px-4 py-3">
@@ -159,6 +195,23 @@ export function AccountIntakePanel({ tasks, onOpenAccount, onChanged, onRefresh 
                       <RotateCcw className="h-3.5 w-3.5" />重试
                     </Button>
                   ) : null}
+                  {task.active ? null : (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy === `discard-${task.id}`}
+                      onClick={() =>
+                        void run(
+                          `discard-${task.id}`,
+                          () => api.discardAccountIntakeTask(task.id),
+                          "已清除该条任务记录",
+                        )
+                      }
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      清除
+                    </Button>
+                  )}
                 </div>
               </div>
 
@@ -183,11 +236,17 @@ export function AccountIntakePanel({ tasks, onOpenAccount, onChanged, onRefresh 
                 ) : null}
               </div>
 
-              {task.status !== "succeeded" && task.status !== "cancelled" ? (
+              {task.active && lastLog ? (
+                <div className="mt-1 truncate font-mono text-[11px] text-slate-400" title={lastLog}>
+                  最新进展：{lastLog}
+                </div>
+              ) : null}
+
+              {FAILURE_STATUSES.has(task.status) ? (
                 <div className="mt-1.5 rounded-md border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-800">
                   <div className="inline-flex items-center gap-1.5 font-semibold">
                     <TriangleAlert className="h-3.5 w-3.5" />
-                    {errorLabel(task.error_code)}
+                    {task.status === "timeout" ? "任务超时" : errorLabel(task.error_code)}
                   </div>
                   {task.message ? <div className="mt-1 break-words">{task.message}</div> : null}
                 </div>
@@ -203,7 +262,9 @@ export function AccountIntakePanel({ tasks, onOpenAccount, onChanged, onRefresh 
                     {showLogs ? "收起日志" : `展开日志（${logs.length}）`}
                   </button>
                   {showLogs ? (
-                    <div className="mt-1 max-h-40 overflow-auto rounded-md bg-slate-950 px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-200">
+                    <div
+                      data-task-log={task.id}
+                      className="mt-1 max-h-40 overflow-auto rounded-md bg-slate-950 px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-200">
                       {logs.slice(-40).map((item) => (
                         <div key={item.id} className="whitespace-pre-wrap break-words">
                           <span className="text-slate-500">{item.time}</span> {item.message}

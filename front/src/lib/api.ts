@@ -464,6 +464,8 @@ export const api = {
   accountIntakeTask: (taskId: number, afterLogId = 0) => request<{ok:boolean;task:AccountIntakeTask}>(`/api/account-pool/tasks/${taskId}?after_log_id=${afterLogId}`),
   cancelAccountIntakeTask: (taskId: number) => request<{ok:boolean;task:AccountIntakeTask}>(`/api/account-pool/tasks/${taskId}/cancel`, {method:"POST"}),
   retryAccountIntakeTask: (taskId: number) => request<{ok:boolean;task:AccountIntakeTask}>(`/api/account-pool/tasks/${taskId}/retry`, {method:"POST"}),
+  discardAccountIntakeTask: (taskId: number) => request<{ok:boolean;removed:Array<{id:number;status:string}>}>(`/api/account-pool/tasks/${taskId}`, {method:"DELETE"}),
+  pruneAccountIntakeTasks: () => request<{ok:boolean;removed:number[]}>("/api/account-pool/tasks/prune", {method:"POST"}),
   verifyAccount: (accountId: number) => request<{ok:boolean;account:AccountPoolItem}>(`/api/account-pool/${accountId}/verify`, {method:"POST"}),
   checkinPoolAccount: (accountId: number) => request<{ok:boolean;result:CheckinResult}>(`/api/account-pool/${accountId}/checkin`, {method:"POST"}),
   checkinPoolAccounts: (ids: number[]) => request<{ok:boolean;success:number;failure:number;items:Array<Record<string,any>>}>("/api/account-pool/checkin", {method:"POST",body:JSON.stringify({ids})}),

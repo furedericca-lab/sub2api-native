@@ -111,6 +111,7 @@ class AccountOperationsService:
         log_callback: Optional[Callable[[str], None]] = None,
         session_factory: Callable[..., Sub2ApiAccountSession] = Sub2ApiAccountSession,
         cancel_callback: Optional[Callable[[], bool]] = None,
+        deadline_callback: Optional[Callable[[], Optional[float]]] = None,
     ) -> None:
         self.repository = repository
         self.crypto = crypto
@@ -118,6 +119,7 @@ class AccountOperationsService:
         self.log_callback = log_callback
         self.session_factory = session_factory
         self.cancel_callback = cancel_callback
+        self.deadline_callback = deadline_callback
 
     def _account(self, account_id: int) -> dict[str, Any]:
         account = self.repository.get_account_context(account_id)
@@ -145,6 +147,7 @@ class AccountOperationsService:
             proxies=self.proxies,
             log_callback=self.log_callback,
             cancel_callback=self.cancel_callback,
+            deadline_callback=self.deadline_callback,
         )
 
     @contextmanager

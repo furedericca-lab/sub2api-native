@@ -14,10 +14,12 @@ from backend.web.account_jobs import (
     CANCELLED,
     FAILED,
     QUEUED,
+    RUNNING,
     SUCCEEDED,
     TIMED_OUT,
     AccountTaskDuplicate,
     AccountTaskNotFound,
+    AccountTaskNotTerminal,
     AccountTaskRunner,
     AccountTaskSpec,
 )
@@ -113,6 +115,59 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(finished["status"], FAILED)
         self.assertEqual(finished["error_code"], "authentication_failure")
         self.assertIn("invalid email or password", finished["message"])
+
+    def test_discard_removes_a_finished_task_and_its_inputs(self):
+        self.register()
+        task = self.submit()
+        self.finish(task["id"])
+        self.assertEqual(
+            self.runner.discard(task["id"]), {"id": task["id"], "status": SUCCEEDED}
+        )
+        self.assertEqual([item["id"] for item in self.runner.list_tasks()], [])
+        with self.assertRaises(AccountTaskNotFound):
+            self.runner.get_task(task["id"])
+        # 任务对象整体丢弃，一次性输入不留在内存里
+        self.assertEqual(self.runner._tasks, [])
+
+    def test_discard_rejects_an_active_task(self):
+        gate = threading.Event()
+
+        def slow(ctx, task):
+            self.assertFalse(gate.is_set())
+            gate.wait(5)
+            return {}
+
+        self.register(run=slow)
+        task = self.submit(email="active@example.com")
+        self.finish_first_tick(task["id"])
+        with self.assertRaises(AccountTaskNotTerminal):
+            self.runner.discard(task["id"])
+        gate.set()
+        self.finish(task["id"])
+        self.assertEqual(self.runner.discard(task["id"])["status"], SUCCEEDED)
+
+    def test_prune_clears_only_the_requested_finished_statuses(self):
+        def chooser(ctx, task):
+            if task["email"].startswith("bad"):
+                raise Sub2ApiApiError(401, "invalid email or password")
+            return {"account_id": 3}
+
+        self.register(run=chooser, classify=classify_account_operation_error)
+        bad = self.submit(email="bad@example.com")
+        self.finish(bad["id"])
+        good = self.submit(email="good@example.com")
+        self.finish(good["id"])
+
+        self.assertEqual(self.runner.prune({FAILED}), [bad["id"]])
+        remaining = {item["id"]: item["status"] for item in self.runner.list_tasks()}
+        self.assertEqual(remaining, {good["id"]: SUCCEEDED})
+
+    def finish_first_tick(self, task_id):
+        for _ in range(200):
+            if self.runner.get_task(task_id)["status"] == RUNNING:
+                return
+            time.sleep(0.01)
+        self.fail("任务未进入执行中")
 
     def test_duplicate_active_submission_is_rejected(self):
         gate = threading.Event()
@@ -278,6 +333,65 @@ class IntakeApiTests(unittest.TestCase):
         return wait_on(
             lambda: self.client.get(f"/api/account-pool/tasks/{task_id}").json()["task"],
             label=f"任务 {task_id}",
+        )
+
+    def test_discard_endpoint_clears_a_finished_card(self):
+        self.fake_service()
+        task = self.submit("clean@example.com").json()["task"]
+        self.finish(task["id"])
+        removed = self.client.delete(f"/api/account-pool/tasks/{task['id']}")
+        self.assertEqual(removed.status_code, 200, removed.text)
+        self.assertEqual(
+            [item["id"] for item in self.client.get("/api/account-pool/tasks").json()["tasks"]],
+            [],
+        )
+        self.assertEqual(
+            self.client.get(f"/api/account-pool/tasks/{task['id']}").status_code, 404
+        )
+
+    def test_discard_endpoint_refuses_an_active_task(self):
+        gate = threading.Event()
+        self.fake_service(blocker=gate)
+        task = self.submit("busy@example.com").json()["task"]
+        blocked = self.client.delete(f"/api/account-pool/tasks/{task['id']}")
+        self.assertEqual(blocked.status_code, 409, blocked.text)
+        self.assertIn("尚未结束", blocked.json()["detail"])
+        gate.set()
+        self.finish(task["id"])
+        self.assertEqual(
+            self.client.delete(f"/api/account-pool/tasks/{task['id']}").status_code, 200
+        )
+
+    def test_prune_endpoint_keeps_success_and_clears_failures(self):
+        created = self.store.create_account(
+            self.profile["id"], "ok@example.com", PASSWORD, "manual"
+        )
+        service = mock.Mock()
+
+        def add_account(profile_id, email, password, *, progress=None):
+            if email == "failed@example.com":
+                raise Sub2ApiApiError(401, "invalid email or password")
+            return created, FakeSummary()
+
+        service.add_account = mock.Mock(side_effect=add_account)
+        patcher = mock.patch(
+            "backend.integrations.sub2api_account_operations.AccountOperationsService",
+            return_value=service,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        failed = self.submit("failed@example.com").json()["task"]
+        self.finish(failed["id"])
+        ok = self.submit("ok@example.com").json()["task"]
+        self.finish(ok["id"])
+
+        pruned = self.client.post("/api/account-pool/tasks/prune")
+        self.assertEqual(pruned.status_code, 200, pruned.text)
+        self.assertEqual(pruned.json()["removed"], [failed["id"]])
+        self.assertEqual(
+            [item["id"] for item in self.client.get("/api/account-pool/tasks").json()["tasks"]],
+            [ok["id"]],
         )
 
     def accounts_for(self, email):

@@ -20,10 +20,11 @@ class TurnstileClickTests(unittest.TestCase):
             turnstile._try_click_turnstile_frame()
 
         frame.locator.assert_called_once_with("body")
+        # 超时故意短：上游挑战页会反复重建 iframe，快速失败才能尽快重新定位
         frame.locator.return_value.click.assert_called_once_with(
             position={"x": 24, "y": 32.5},
             force=True,
-            timeout=3000,
+            timeout=2000,
         )
         frame.frame_element.assert_not_called()
 
@@ -40,7 +41,7 @@ class TurnstileClickTests(unittest.TestCase):
         iframe.click.assert_called_once_with(
             position={"x": 24, "y": 32.5},
             force=True,
-            timeout=3000,
+            timeout=2000,
         )
         raw_page.query_selector.assert_not_called()
 

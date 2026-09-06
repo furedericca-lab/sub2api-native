@@ -24,11 +24,13 @@ class CamoufoxCaptchaSolver:
         retry_delay: float = 10.0,
         log_callback: Optional[Callable[[str], None]] = None,
         cancel_callback: Optional[Callable[[], bool]] = None,
+        deadline_callback: Optional[Callable[[], Optional[float]]] = None,
     ) -> None:
         self.attempts = max(1, int(attempts))
         self.retry_delay = max(0.0, float(retry_delay))
         self.log_callback = log_callback
         self.cancel_callback = cancel_callback
+        self.deadline_callback = deadline_callback
         self._page = None
 
     def _log(self, message: str) -> None:
@@ -56,6 +58,29 @@ class CamoufoxCaptchaSolver:
         if normalized == "turnstile":
             return self._solve_turnstile(settings, page_url)
         raise CaptchaError(f"站点使用了不支持的验证码类型: {normalized or 'unknown'}")
+
+    def _attempt_budget(self) -> Optional[float]:
+        """本次验证码尝试（启动浏览器 + 渲染挑战页 + 等 token）的挂钟预算。
+
+        没有时限（例如注册主流程）时返回 None，行为与以往一致；有时限时最多
+        占用 180s，并给登录与密钥同步留出收尾时间。
+        """
+        if self.deadline_callback is None:
+            return None
+        try:
+            remaining = float(self.deadline_callback() or 0.0)
+        except Exception:
+            return None
+        if remaining <= 12.0:
+            raise CaptchaError("账户任务剩余时间不足，已停止自动登录")
+        return min(180.0, remaining - 8.0)
+
+    @staticmethod
+    def _poll_budget(attempt_deadline: Optional[float]) -> Optional[float]:
+        """渲染完成后，留给轮询等 token 的预算。"""
+        if attempt_deadline is None:
+            return None
+        return max(5.0, min(60.0, attempt_deadline - time.monotonic() - 3.0))
 
     def _solve_cap(self, settings: Dict[str, Any]) -> str:
         try:
@@ -146,10 +171,38 @@ class CamoufoxCaptchaSolver:
             target_url = require_http_url(page_url, "Turnstile page URL")
         except ValueError as exc:
             raise CaptchaError(str(exc)) from exc
+        raise_if_cancelled(self.cancel_callback)
+        # 预算必须在启动浏览器前就算出来：冷启动可拖到分钟级，等到要 token 时
+        # 再看剩余时间已经保不住任务时限。
+        budget = self._attempt_budget()
+        attempt_deadline = time.monotonic() + budget if budget else None
         raw_page = self._ensure_page().raw_page
-        action = str(settings.get("captcha_action") or "").strip()
-        cdata = str(settings.get("captcha_cdata") or "").strip()
-        challenge_html = f"""<!doctype html><html><body
+        if attempt_deadline is not None and time.monotonic() >= attempt_deadline:
+            raise CaptchaError("验证码阶段超过任务时限，已停止自动登录（可重试）")
+        disarm = None
+        if attempt_deadline is not None:
+            disarm = browser_session.arm_browser_watchdog(
+                max(1.0, attempt_deadline - time.monotonic()) + 5.0,
+                browser_session.current_profile_dir(),
+                self.log_callback,
+            )
+        try:
+            return self._render_and_wait_token(
+                raw_page, target_url, site_key, settings, attempt_deadline
+            )
+        except BaseException as exc:
+            if attempt_deadline is not None and time.monotonic() >= attempt_deadline:
+                raise CaptchaError(
+                    "验证码阶段超过任务时限，已停止自动登录（可重试）"
+                ) from exc
+            raise
+        finally:
+            if disarm is not None:
+                disarm()
+
+    @staticmethod
+    def _challenge_html(site_key: str, action: str, cdata: str) -> str:
+        return f"""<!doctype html><html><body
           data-site-key="{html.escape(site_key, quote=True)}"
           data-action="{html.escape(action, quote=True)}"
           data-cdata="{html.escape(cdata, quote=True)}">
@@ -165,6 +218,18 @@ class CamoufoxCaptchaSolver:
           </script>
           <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" onload="renderTurnstile()" async defer></script>
         </body></html>"""
+
+    def _render_and_wait_token(
+        self,
+        raw_page: Any,
+        target_url: str,
+        site_key: str,
+        settings: Dict[str, Any],
+        attempt_deadline: Optional[float],
+    ) -> str:
+        action = str(settings.get("captcha_action") or "").strip()
+        cdata = str(settings.get("captcha_cdata") or "").strip()
+        challenge_html = self._challenge_html(site_key, action, cdata)
 
         def fulfill_challenge(route) -> None:
             route.fulfill(status=200, content_type="text/html", body=challenge_html)
@@ -183,6 +248,8 @@ class CamoufoxCaptchaSolver:
             return get_turnstile_token(
                 log_callback=self.log_callback,
                 cancel_callback=self.cancel_callback,
+                budget_seconds=self._poll_budget(attempt_deadline),
+                arm_watchdog=False,
             )
         except RegistrationCancelled:
             # 调用方停止不是验证码失败，原样上抛才能被归为 cancelled。

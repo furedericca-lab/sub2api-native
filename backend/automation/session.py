@@ -849,6 +849,104 @@ def start_browser(log_callback=None, geoip_override: Optional[bool] = None) -> T
     raise Exception(f"{engine_label} 启动失败: {last_exc}")
 
 
+def current_profile_dir() -> Optional[str]:
+    """本线程浏览器会话的临时资料目录，用于精确认领自己的浏览器进程。"""
+    return getattr(_tls, "profile_dir", None)
+
+
+def _proc_field(pid: int, name: str) -> str:
+    path = os.path.join("/proc", str(pid), name)
+    try:
+        with open(path, "rb") as handle:
+            return handle.read().decode("utf-8", "ignore").replace("\x00", " ")
+    except OSError:
+        return ""
+
+
+def _proc_ppid(pid: int) -> int:
+    stat = _proc_field(pid, "stat")
+    try:
+        return int(stat.rsplit(") ", 1)[1].split()[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def profile_process_tree(profile_dir) -> list:
+    """按 profile 目录找回仍存活的浏览器进程，返回 [(pid, is_browser), ...]。
+
+    只有当 Playwright 驱动是本会话浏览器的父进程时才一并纳入，避免误伤同进程
+    其它线程的浏览器会话。/proc 不可用（例如 Windows）时返回空列表。
+    """
+    marker = os.path.normpath(str(profile_dir or "")).replace("\\", "/")
+    if len(marker) < 3 or not os.path.isdir("/proc"):
+        return []
+    found = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        pid = int(entry)
+        if pid == os.getpid():
+            continue
+        if marker in _proc_field(pid, "cmdline"):
+            found[pid] = True
+    for pid in list(found):
+        parent = _proc_ppid(pid)
+        if parent and parent not in found and parent != os.getpid():
+            if "playwright/driver" in _proc_field(parent, "cmdline"):
+                found[parent] = False
+    return sorted(found.items())
+
+
+def terminate_profile_processes(profile_dir, log_callback=None) -> int:
+    """确保本会话的浏览器进程真的消失；quit() 失败或卡死时用它兜底。"""
+    targets = profile_process_tree(profile_dir)
+    if not targets:
+        return 0
+    for pid, _is_browser in targets:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if not profile_process_tree(profile_dir):
+            break
+        time.sleep(0.1)
+    survivors = profile_process_tree(profile_dir)
+    for pid, _is_browser in survivors:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    if log_callback:
+        pids = ", ".join(str(pid) for pid, _flag in targets)
+        note = f"（{len(survivors)} 个需要 SIGKILL）" if survivors else ""
+        log_callback(f"[!] 回收残留浏览器进程: {pids}{note}")
+    return len(targets)
+
+
+def arm_browser_watchdog(seconds, profile_dir, log_callback=None) -> Callable[[], None]:
+    """到期强制回收本会话浏览器，返回解除函数。
+
+    Playwright 的 evaluate / frame_element / bounding_box 一类调用没有超时，
+    上游挑战脚本占住页面 JS 或反复重建 iframe 时会永久阻塞，协作式取消也就
+    再也轮不到；一次性定时器是把卡死会话打断的唯一可靠手段。
+    """
+    if not profile_dir:
+        return lambda: None
+
+    def _fire() -> None:
+        try:
+            terminate_profile_processes(profile_dir, log_callback)
+        except BaseException:
+            pass
+
+    timer = threading.Timer(max(float(seconds), 1.0), _fire)
+    timer.daemon = True
+    timer.start()
+    return timer.cancel
+
+
 def stop_browser(force=False, log_callback=None):
     if _debug() and not force:
         return
@@ -858,12 +956,17 @@ def stop_browser(force=False, log_callback=None):
     if current is None:
         _cleanup_profile_dir(profile_dir)
         return
+    # quit() 自身也可能卡在已断开的驱动上，先挂一个看门狗再关闭。
+    disarm = arm_browser_watchdog(12.0, profile_dir, log_callback)
     try:
         current.quit(del_data=True)
     except BaseException as exc:
         # 静默吞掉会让闲置浏览器无法归因，这里留一行痕迹。
         if log_callback:
             log_callback(f"[!] 关闭浏览器失败，可能残留实例: {str(exc)[:180]}")
+    finally:
+        disarm()
+    terminate_profile_processes(profile_dir, log_callback)
     _cleanup_profile_dir(profile_dir)
 
 

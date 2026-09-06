@@ -33,6 +33,7 @@ from .account_jobs import (
     AccountTaskContext,
     AccountTaskDuplicate,
     AccountTaskNotFound,
+    AccountTaskNotTerminal,
     AccountTaskRunner,
     AccountTaskSpec,
     wait_for_slot,
@@ -686,6 +687,7 @@ def create_app() -> FastAPI:
             proxies=gr.get_proxies(),
             log_callback=ctx.log,
             cancel_callback=ctx.cancelled,
+            deadline_callback=ctx.remaining_seconds,
         )
         account, summary = service.add_account(
             int(task["profile_id"]), str(task["email"]), password, progress=ctx
@@ -1669,6 +1671,30 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=410, detail=str(exc)) from exc
+
+    @app.delete("/api/account-pool/tasks/{task_id}")
+    def api_account_pool_task_discard(task_id: int) -> Dict[str, Any]:
+        """清除一条已结束任务。
+
+        仍在排队或执行时返回 409：抽掉活跃任务会让工作线程失去上下文，也会让
+        同一邮箱的去重闸门静默消失。
+        """
+        try:
+            return {"ok": True, "removed": [account_intake.discard(task_id)]}
+        except AccountTaskNotFound as exc:
+            raise HTTPException(status_code=404, detail="任务不存在或已被清理") from exc
+        except AccountTaskNotTerminal as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/account-pool/tasks/prune")
+    def api_account_pool_tasks_prune(
+        statuses: str = Query("failed,timeout,cancelled", min_length=1),
+    ) -> Dict[str, Any]:
+        """批量清除已结束任务，默认只清失败、超时与已取消。"""
+        wanted = {item.strip() for item in statuses.split(",") if item.strip()}
+        if not wanted:
+            raise HTTPException(status_code=422, detail="statuses 不能为空")
+        return {"ok": True, "removed": account_intake.prune(wanted)}
 
     @app.post("/api/account-pool/credentials-txt/download")
     def api_account_pool_credentials_txt_download(body: AccountIdsBody) -> StreamingResponse:

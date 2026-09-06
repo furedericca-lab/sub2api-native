@@ -9,16 +9,24 @@ token 出现；未通过则间隔重试点击。
 """
 from __future__ import annotations
 
+import time
 from typing import Any, Callable, Optional
 
-from backend.automation.session import active_page, page
+from backend.automation.session import (
+    active_page,
+    arm_browser_watchdog,
+    current_profile_dir,
+    page,
+)
 from backend.registration.runtime import raise_if_cancelled, sleep_with_cancel
 
 
-def get_turnstile_token(
+def _poll_turnstile_token(
     log_callback: Optional[Callable[[str], None]] = None,
     cancel_callback: Optional[Callable[[], bool]] = None,
     force_reset: bool = False,
+    deadline: Optional[float] = None,
+    budget_seconds: float = 0.0,
 ) -> str:
     """获取 Turnstile token（直接点击 + 轮询等待）。
 
@@ -35,9 +43,15 @@ def get_turnstile_token(
     last_click_round = -100
     TOTAL_ROUNDS = 20
     POLL_INTERVAL = 2.0
+    # 上游可能把托管模式降级成看得见的人工挑战框（300x65）并反复重建 iframe，
+    # 点击和页面 JS 读取都会因此变慢甚至卡住，所以硬上限是挂钟预算而不是轮数。
+    expired = False
 
     for _ in range(0, TOTAL_ROUNDS):
         raise_if_cancelled(cancel_callback)
+        if deadline is not None and time.monotonic() >= deadline:
+            expired = True
+            break
         try:
             token = page.run_js(
                 """
@@ -57,8 +71,8 @@ try {
                     log_callback(f"[*] Turnstile 已通过，token长度={len(token)}")
                 return token
 
-            # 直接点击（首次或间隔重试）
-            if not click_attempted or (_ - last_click_round >= 4):
+            # 直接点击（首次或间隔重试）；挑战框重建后很快可以再点，不必等 4 轮
+            if not click_attempted or (_ - last_click_round >= 2):
                 if not click_attempted:
                     if log_callback:
                         log_callback("[*] 尝试点击 Turnstile...")
@@ -74,7 +88,54 @@ try {
             pass
         sleep_with_cancel(POLL_INTERVAL, cancel_callback)
 
+    if expired:
+        reason = (
+            f"Turnstile 在 {budget_seconds:.0f}s 预算内未通过，"
+            "上游保持人工交互挑战（常见于当前出口 IP 风险评分较高，或挑战页反复重建）"
+        )
+        if log_callback:
+            log_callback(f"[!] {reason}")
+        raise Exception(reason)
     raise Exception("Turnstile 获取 token 失败")
+
+
+def get_turnstile_token(
+    log_callback: Optional[Callable[[str], None]] = None,
+    cancel_callback: Optional[Callable[[], bool]] = None,
+    force_reset: bool = False,
+    budget_seconds: Optional[float] = None,
+    arm_watchdog: bool = True,
+) -> str:
+    """获取 Turnstile token，带挂钟预算与卡死看门狗。
+
+    Playwright 的 evaluate / frame_element / bounding_box 没有超时，上游挑战页
+    反复重建 iframe 时这些调用会永久阻塞，轮顶的协作式取消也就轮不到。预算
+    到期后看门狗强制回收本会话浏览器，阻塞中的调用随即报错，任务才能终止。
+    """
+    budget = float(budget_seconds) if budget_seconds and float(budget_seconds) > 0 else 0.0
+    if budget <= 0:
+        return _poll_turnstile_token(
+            log_callback=log_callback,
+            cancel_callback=cancel_callback,
+            force_reset=force_reset,
+        )
+    deadline = time.monotonic() + budget
+    disarm = (
+        arm_browser_watchdog(budget + 5.0, current_profile_dir(), log_callback)
+        if arm_watchdog
+        else None
+    )
+    try:
+        return _poll_turnstile_token(
+            log_callback=log_callback,
+            cancel_callback=cancel_callback,
+            force_reset=force_reset,
+            deadline=deadline,
+            budget_seconds=budget,
+        )
+    finally:
+        if disarm is not None:
+            disarm()
 
 
 def _try_click_turnstile_frame(log_callback: Optional[Callable[[str], None]] = None) -> None:
@@ -145,7 +206,7 @@ def _try_click_turnstile_frame(log_callback: Optional[Callable[[str], None]] = N
         turnstile_frame.locator("body").click(
             position={"x": click_x, "y": click_y},
             force=True,
-            timeout=3000,
+            timeout=2000,
         )
         if log_callback:
             log_callback(f"[*] 已点击 Turnstile frame body ({click_x}, {click_y:.0f})")
@@ -165,7 +226,7 @@ def _try_click_turnstile_frame(log_callback: Optional[Callable[[str], None]] = N
                 iframe_el.click(
                     position={"x": 24, "y": box["height"] / 2},
                     force=True,
-                    timeout=3000,
+                    timeout=2000,
                 )
                 if log_callback:
                     log_callback(
@@ -186,6 +247,11 @@ def _try_click_turnstile_frame(log_callback: Optional[Callable[[str], None]] = N
             raw_page.mouse.click(px, py)
             if log_callback:
                 log_callback(f"[*] 已在 page 级点击 Turnstile iframe ({px:.0f}, {py:.0f})")
+            return
+        if log_callback:
+            # 挑战 iframe 正在重建时拿不到坐标，过去这里会静默返回，日志上看起来
+            # 像“点了但没用”。
+            log_callback("[Debug] Turnstile iframe 暂无尺寸（挑战页重建中），本轮不点击")
     except Exception as page_click_exc:
         if log_callback:
             log_callback(f"[Debug] Turnstile page 级点击失败: {page_click_exc}")

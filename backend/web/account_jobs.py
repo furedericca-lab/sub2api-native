@@ -15,7 +15,7 @@ import threading
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Tuple
 
 QUEUED = "queued"
 RUNNING = "running"
@@ -50,6 +50,10 @@ class AccountTaskDuplicate(RuntimeError):
     """同一输入已有未结束的任务。"""
 
 
+class AccountTaskNotTerminal(RuntimeError):
+    """任务还在排队或执行，不能从历史里清除。"""
+
+
 class AccountTaskNotFound(KeyError):
     """任务不存在（内存队列在服务重启后清空）。"""
 
@@ -71,6 +75,10 @@ class AccountTaskContext:
 
     def cancelled(self) -> bool:
         return self._runner._cancel_reason(self.task_id) is not None
+
+    def remaining_seconds(self) -> Optional[float]:
+        """剩余时限（秒）；没有设时限返回 None，让实现方能区分“无限”与“快到期”。"""
+        return self._runner._remaining_seconds(self.task_id)
 
     def check_cancelled(self) -> None:
         reason = self._runner._cancel_reason(self.task_id)
@@ -268,6 +276,49 @@ class AccountTaskRunner:
             self._append_log(task["id"], "已请求取消，正在等待当前步骤结束")
             return self._snapshot(task)
 
+    def discard(self, task_id: int) -> Dict[str, Any]:
+        """把一条已结束任务从内存历史中移掉。
+
+        失败记录会一直占着卡片，而任务对象里连提交时的密码都只存在私有字段；
+        清除记录等于把这些一次性输入一并丢掉。仍在排队或执行时拒绝，避免
+        把活跃任务的工作线程上下文抽掉。
+        """
+        with self._lock:
+            task = self._by_id_locked(task_id)
+            if task is None:
+                raise AccountTaskNotFound(str(task_id))
+            status = str(task["status"])
+            if status not in TERMINAL_STATUSES:
+                label = "排队中" if status == QUEUED else "执行中"
+                raise AccountTaskNotTerminal(
+                    f"任务 #{task_id} 尚未结束（{label}），请先取消或等它结束"
+                )
+            self._drop_locked(task)
+            return {"id": int(task_id), "status": status}
+
+    def prune(self, statuses: Optional[Iterable[str]] = None) -> List[int]:
+        """批量清除已结束任务，返回被清除的任务 id。"""
+        wanted = {str(item) for item in (statuses or TERMINAL_STATUSES)}
+        with self._lock:
+            victims = [
+                task
+                for task in self._tasks
+                if str(task["status"]) in TERMINAL_STATUSES and str(task["status"]) in wanted
+            ]
+            removed = [int(task["id"]) for task in victims]
+            for task in victims:
+                self._drop_locked(task)
+            return removed
+
+    def _drop_locked(self, task: Dict[str, Any]) -> None:
+        """从历史与待执行队列里摘掉任务，并清空对象本身（含 _secrets）。"""
+        task_id = int(task.get("id") or 0)
+        self._tasks = [item for item in self._tasks if int(item.get("id") or 0) != task_id]
+        self._pending = collections.deque(
+            pid for pid in self._pending if int(pid) != task_id
+        )
+        task.clear()
+
     def stop(self) -> None:
         """停止工作线程；未开始的任务标记为已取消。"""
         with self._wake:
@@ -462,6 +513,14 @@ class AccountTaskRunner:
                 return
             task["stage"] = name[:120]
         self._append_log(task_id, f"[stage] {name}")
+
+    def _remaining_seconds(self, task_id: int) -> Optional[float]:
+        with self._lock:
+            task = self._by_id_locked(task_id)
+            deadline = task.get("_deadline") if task else None
+        if deadline is None:
+            return None
+        return max(0.0, float(deadline) - time.monotonic())
 
     def _cancel_reason(self, task_id: int) -> Optional[str]:
         with self._lock:
