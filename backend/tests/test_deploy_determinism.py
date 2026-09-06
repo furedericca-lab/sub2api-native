@@ -34,6 +34,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "check-outlookemail-contract.py"
 GATE_L = REPO_ROOT / "deploy" / "check-gate-l.sh"
+GATE_L_EXPECT = REPO_ROOT / "deploy" / "gate-l-expect.sh"
+GATE_L_LOCAL_EXAMPLE = REPO_ROOT / "deploy" / "gate-l.local.example"
+GATE_L_ENV_KEYS = (
+    "SUB2API_GATE_L_EXPECTED",
+    "SUB2API_GATE_L_ACCEPTANCE_ACK",
+    "SUB2API_GATE_L_ACCEPTANCE_REF",
+)
 
 
 def _load_contract_module():
@@ -377,7 +384,10 @@ class GateLFailClosedTests(unittest.TestCase):
             any(build_at < pos < up_at for pos in gate_calls),
             "must re-assert after build and before recreate",
         )
-        self.assertIn("SUB2API_GATE_L_EXPECTED", text)
+        # Resolution is delegated so the local expectation can be a recorded,
+        # git-ignored decision instead of a per-command flag.
+        self.assertIn("gate-l-expect.sh", text)
+        self.assertIn("GATE_L_EXPECTED=\"$(sed -n 's/^EXPECTED=//p'", text)
 
     def test_update_script_tags_the_previous_image_before_the_build_moves_local(self):
         """build overwrites :local, so the rollback point must be taken first."""
@@ -402,6 +412,199 @@ class GateLFailClosedTests(unittest.TestCase):
             text.index("tag_current_image\n\ncd deploy"),
             text.index("compose.yaml build"),
         )
+
+
+class GateLExpectationPolicyTests(unittest.TestCase):
+    """A raised expectation must be a recorded local decision, not a habit."""
+
+    def setUp(self):
+        self.assertTrue(GATE_L_EXPECT.is_file(), "deploy/gate-l-expect.sh must exist")
+        self.assertTrue(os.access(GATE_L_EXPECT, os.X_OK), "gate-l-expect.sh must be executable")
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _compose(self, rendered_value):
+        path = self.tmp / "compose.yaml"
+        path.write_text(
+            "services:\n"
+            "  sub2api-native:\n"
+            "    image: fixture:local\n"
+            "    environment:\n"
+            f'      SUB2API_GATE_L_MAX_COUNT: "{rendered_value}"\n',
+            encoding="utf-8",
+        )
+        return path
+
+    def _run_check(self, file_text, compose_value):
+        if shutil.which("docker") is None or shutil.which("jq") is None:
+            self.skipTest("docker compose and jq are required to render fixtures")
+        pinned = self.tmp / "gate-l.local"
+        pinned.write_text(file_text, encoding="utf-8")
+        env = {k: v for k, v in os.environ.items() if k not in GATE_L_ENV_KEYS}
+        env["GATE_L_LOCAL_FILE"] = str(pinned)
+        return subprocess.run(
+            [str(GATE_L_EXPECT), "--check", str(self._compose(compose_value))],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    def _run(self, file_text=None, **overrides):
+        env = {k: v for k, v in os.environ.items() if k not in GATE_L_ENV_KEYS}
+        for key, value in overrides.items():
+            self.assertIn(key, GATE_L_ENV_KEYS, f"unsupported override {key}")
+            env[key] = str(value)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gate-l.local"
+            if file_text is not None:
+                path.write_text(file_text, encoding="utf-8")
+            env["GATE_L_LOCAL_FILE"] = str(path)
+            return subprocess.run(
+                [str(GATE_L_EXPECT)],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
+
+    @staticmethod
+    def _fields(stdout: str) -> dict[str, str]:
+        return dict(
+            line.split("=", 1)
+            for line in stdout.strip().splitlines()
+            if "=" in line
+        )
+
+    def test_absent_local_file_keeps_the_fail_closed_default(self):
+        result = self._run()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(
+            self._fields(result.stdout),
+            {"EXPECTED": "1", "ACK": "0", "REF": "", "ACK_SOURCE": "default"},
+        )
+
+    def test_local_file_raising_the_expectation_without_ack_fails(self):
+        result = self._run("SUB2API_GATE_L_EXPECTED=99\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("count=2", result.stdout + result.stderr)
+
+    def test_local_file_granted_ack_requires_a_citable_reference(self):
+        result = self._run(
+            "SUB2API_GATE_L_EXPECTED=99\nSUB2API_GATE_L_ACCEPTANCE_ACK=1\n"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SUB2API_GATE_L_ACCEPTANCE_REF", result.stdout + result.stderr)
+
+    def test_placeholder_reference_is_rejected(self):
+        for ref in ("TODO-fill", "change-this", "<paste here>", "TBD"):
+            with self.subTest(ref=ref):
+                result = self._run(
+                    "SUB2API_GATE_L_EXPECTED=99\n"
+                    "SUB2API_GATE_L_ACCEPTANCE_ACK=1\n"
+                    f"SUB2API_GATE_L_ACCEPTANCE_REF={ref}\n"
+                )
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_local_file_ack_with_a_real_reference_resolves(self):
+        result = self._run(
+            "# pinned after live acceptance\n"
+            "SUB2API_GATE_L_EXPECTED=99\n"
+            "SUB2API_GATE_L_ACCEPTANCE_ACK=1\n"
+            "SUB2API_GATE_L_ACCEPTANCE_REF=2026-09-04 wiki Gate L revalidation\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        fields = self._fields(result.stdout)
+        self.assertEqual(fields["EXPECTED"], "99")
+        self.assertEqual(fields["ACK"], "1")
+        self.assertEqual(fields["ACK_SOURCE"], "file")
+        self.assertIn("2026-09-04", fields["REF"])
+
+    def test_environment_overrides_the_pinned_file(self):
+        pinned = (
+            "SUB2API_GATE_L_EXPECTED=99\n"
+            "SUB2API_GATE_L_ACCEPTANCE_ACK=1\n"
+            "SUB2API_GATE_L_ACCEPTANCE_REF=2026-09-04 wiki Gate L revalidation\n"
+        )
+        result = self._run(pinned, SUB2API_GATE_L_EXPECTED="1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self._fields(result.stdout)["EXPECTED"], "1")
+
+    def test_typed_wrong_key_fails_closed_instead_of_being_ignored(self):
+        # SUB2API_GATE_L_MAX_COUNT is the runtime ceiling in deploy/.env, not an
+        # expectation key; silently ignoring it would re-open the drift this file
+        # exists to close.
+        result = self._run("SUB2API_GATE_L_MAX_COUNT=99\n")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("未知键", result.stdout + result.stderr)
+
+    def test_malformed_line_fails_closed(self):
+        self.assertNotEqual(self._run("expect 99 please\n").returncode, 0)
+
+    def test_out_of_range_expectation_fails_closed(self):
+        for value in ("0", "1001", "nine"):
+            with self.subTest(value=value):
+                result = self._run(f"SUB2API_GATE_L_EXPECTED={value}\n")
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_non_boolean_ack_fails_closed(self):
+        result = self._run(
+            "SUB2API_GATE_L_EXPECTED=99\nSUB2API_GATE_L_ACCEPTANCE_ACK=true\n"
+            "SUB2API_GATE_L_ACCEPTANCE_REF=2026-09-04 wiki Gate L revalidation\n"
+        )
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_template_copy_stays_fail_closed(self):
+        self.assertTrue(GATE_L_LOCAL_EXAMPLE.is_file())
+        template = GATE_L_LOCAL_EXAMPLE.read_text(encoding="utf-8")
+        for key in GATE_L_ENV_KEYS:
+            self.assertIn(key, template)
+        result = self._run(GATE_L_LOCAL_EXAMPLE.read_text(encoding="utf-8"))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self._fields(result.stdout)["EXPECTED"], "1")
+        self.assertEqual(self._fields(result.stdout)["ACK"], "0")
+
+    def test_check_mode_hands_the_resolved_expectation_to_the_gate(self):
+        result = self._run_check(
+            "SUB2API_GATE_L_EXPECTED=99\n"
+            "SUB2API_GATE_L_ACCEPTANCE_ACK=1\n"
+            "SUB2API_GATE_L_ACCEPTANCE_REF=2026-09-04 wiki Gate L revalidation\n",
+            "99",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+        self.assertIn("2026-09-04 wiki Gate L revalidation", result.stdout)
+
+    def test_pinning_still_asserts_and_stays_host_local(self):
+        # A host that never recorded the acceptance keeps asserting 1 and must
+        # reject this rendered 99: pinning here cannot relax anyone else's gate.
+        result = self._run_check("SUB2API_GATE_L_EXPECTED=1\n", "99")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("!= 期望 1", result.stdout + result.stderr)
+
+    def test_readme_manual_sequence_shares_the_resolution_path(self):
+        readme = (REPO_ROOT / "deploy" / "README.md").read_text(encoding="utf-8")
+        self.assertEqual(
+            readme.count("deploy/gate-l-expect.sh --check"),
+            2,
+            "the manual build and pre-recreate steps must resolve the expectation the "
+            "same way update.sh does, not hard-code a bare check-gate-l.sh",
+        )
+
+    def test_host_local_policy_is_never_tracked(self):
+        gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("deploy/gate-l.local", gitignore)
+        if shutil.which("git") is None:
+            self.skipTest("git unavailable")
+        probe = subprocess.run(
+            ["git", "check-ignore", "-q", "deploy/gate-l.local"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # git check-ignore exits 1 when the path is NOT ignored.
+        self.assertEqual(probe.returncode, 0, "deploy/gate-l.local must stay ignored")
 
 
 class TrackedGeneratedFrontendTests(unittest.TestCase):

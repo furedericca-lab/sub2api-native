@@ -39,15 +39,22 @@ docker compose -f deploy/docker-compose.yml config --quiet || fail "docker-compo
 
 # Gate L 断言（fail closed）：批量注册上限必须以 rendered 实际值为准。
 # 代码默认与 Compose 默认都是 1，但 deploy/.env 或宿主环境的一行覆盖可以把
-# 它静默改成 1000；只相信默认值等于没有门禁。期望值来自
-# SUB2API_GATE_L_EXPECTED（默认 1）。提高到 1 以上需要 Gate L R2（count=2
-# 第二账户全新浏览器身份，cookies/sessionStorage 不继承第一账户）的 Live
-# 验收已完成，并显式设置 SUB2API_GATE_L_ACCEPTANCE_ACK=1。
-GATE_L_EXPECTED="${SUB2API_GATE_L_EXPECTED:-1}"
+# 它静默改成 1000；只相信默认值等于没有门禁。期望值的解析集中在
+# deploy/gate-l-expect.sh：共享基线默认仍然是 1，本机完成 Gate L R2（count=2
+# 第二账户全新浏览器身份，cookies/sessionStorage 不继承第一账户）的 Live 验收后，
+# 把期望值连同验收出处固化在被 git 忽略的 deploy/gate-l.local 里，而不是每次
+# 临时带旗标。一次性环境变量 SUB2API_GATE_L_EXPECTED /
+# SUB2API_GATE_L_ACCEPTANCE_ACK 仍可覆盖本机配置，用于临时演练。
+gate_l_expect_out="$(deploy/gate-l-expect.sh)" \
+  || fail "Gate L 期望值配置无效，拒绝 build/recreate"
+GATE_L_EXPECTED="$(sed -n 's/^EXPECTED=//p' <<<"$gate_l_expect_out")"
+GATE_L_ACK="$(sed -n 's/^ACK=//p' <<<"$gate_l_expect_out")"
+GATE_L_ACCEPTANCE_REF="$(sed -n 's/^REF=//p' <<<"$gate_l_expect_out")"
+GATE_L_ACK_SOURCE="$(sed -n 's/^ACK_SOURCE=//p' <<<"$gate_l_expect_out")"
 GATE_L_ACK_ARGS=()
-if [[ "${SUB2API_GATE_L_ACCEPTANCE_ACK:-0}" == "1" ]]; then
+if [[ "$GATE_L_ACK" == "1" ]]; then
   GATE_L_ACK_ARGS=(--acceptance-ack)
-  echo "[update] Gate L 期望值已由显式验收旗标提高到 ${GATE_L_EXPECTED}"
+  echo "[update] Gate L 期望值 ${GATE_L_EXPECTED} 带验收旗标（来源 ${GATE_L_ACK_SOURCE}）；出处: ${GATE_L_ACCEPTANCE_REF:-未提供}"
 fi
 deploy/check-gate-l.sh --expected "$GATE_L_EXPECTED" "${GATE_L_ACK_ARGS[@]}" \
   deploy/compose.yaml deploy/docker-compose.yml \

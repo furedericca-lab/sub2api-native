@@ -1,0 +1,28 @@
+# 本机 Gate L 期望值策略（复制为 deploy/gate-l.local；该文件被 git 忽略）。
+#
+# 这里固化的是 deploy/check-gate-l.sh 的**期望值**，不是运行时上限。运行时的
+# 实际上限来自 deploy/.env 的 SUB2API_GATE_L_MAX_COUNT；门禁断言的是
+# “rendered 实际值 == 这里的期望值”，任何不一致仍然直接失败。
+#
+# 为什么需要它：共享基线的默认期望值永远是 1。某台主机完成 Gate L R2
+# （count=2 第二账户全新浏览器身份，cookies/sessionStorage 不继承第一账户）的
+# Live 验收并把本机上限抬上去之后，如果期望值仍留在 1，每次部署都会在一次与
+# 本次变更无关的失败上耗尽注意力，最终诱导操作者无条件带 --acceptance-ack。
+# 把验收后的期望值连同出处写在这里，既保住默认门禁，也保住它的告警价值。
+#
+# 抬升期望值即允许批量注册，务必先有真实身份隔离验收。
+
+# 验收后的本机期望值；不写则视为 1（fail-closed 默认）。
+SUB2API_GATE_L_EXPECTED=1
+
+# 只有完成上述 Live 验收才置 1。
+SUB2API_GATE_L_ACCEPTANCE_ACK=0
+
+# 由本文件授予 ack 时必填：一句可核对的出处（日期 + 验收记录位置）。
+# 一次性用环境变量带 ack 不要求本字段；持久化的 ack 必须自带声明。
+SUB2API_GATE_L_ACCEPTANCE_REF=
+
+# 例：
+#   SUB2API_GATE_L_EXPECTED=99
+#   SUB2API_GATE_L_ACCEPTANCE_ACK=1
+#   SUB2API_GATE_L_ACCEPTANCE_REF=2026-09-04 Gate L R2 revalidation, .wiki/how-to/e2e-acceptance-checklist.md

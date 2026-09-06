@@ -296,8 +296,31 @@ count=2 second account with a clean browser identity whose cookies and
 sessionStorage do not inherit the first account) and an explicit
 --acceptance-ack. Without that flag a raised expectation is itself an error, and
 the flag never hides a rendered/expected mismatch. update.sh runs the assertion
-before build and again before recreate, with SUB2API_GATE_L_EXPECTED and
-SUB2API_GATE_L_ACCEPTANCE_ACK as the only ways to aim it elsewhere.
+before build and again before recreate.
+
+gate-l-expect.sh resolves the expectation update.sh should assert, in this
+order: explicit SUB2API_GATE_L_EXPECTED / SUB2API_GATE_L_ACCEPTANCE_ACK /
+SUB2API_GATE_L_ACCEPTANCE_REF environment variables, then the git-ignored
+`deploy/gate-l.local`, then the fail-closed default of 1 with no ack. It only
+parses that file and prints `EXPECTED` / `ACK` / `REF` / `ACK_SOURCE`; it never
+runs Docker and never raises anything by itself. `--check [compose-file ...]`
+hands the resolved expectation straight to check-gate-l.sh and prints the
+acceptance reference alongside the verdict, so the manual runbook sequence and
+update.sh share one resolution path instead of maintaining two.
+
+Once a host has passed the Gate L R2 live acceptance, pin it in
+`deploy/gate-l.local` (copy `deploy/gate-l.local.example`) instead of prefixing
+`SUB2API_GATE_L_ACCEPTANCE_ACK=1` onto every run. A host that fails an unrelated
+gate on every deploy trains the operator to wave the flag through, which is
+exactly the alert the gate exists to provide; recording the ceiling once, with
+its acceptance reference, keeps both the default and the alarm. An ack granted
+by the file must carry a non-empty `SUB2API_GATE_L_ACCEPTANCE_REF` (a date plus
+where the acceptance is recorded), and placeholder values are rejected, so a
+persistent ack always travels with its own justification while a one-off
+environment ack stays a deliberate same-shell act. Unknown keys, malformed
+lines, out-of-range expectations, and non-boolean acks all fail closed, and the
+local file is ignored by Git because it raises this host only: the shared
+baseline expectation stays 1.
 
 Like the mailbox gate, it only runs docker compose config --format json and jq:
 it never contacts a container, reads a credential file, or creates Docker
@@ -311,7 +334,7 @@ The shortest supported local flow is:
 git submodule sync --recursive
 git submodule update --init --recursive
 
-deploy/check-gate-l.sh
+deploy/gate-l-expect.sh --check
 deploy/check-mailbox-handoff.sh
 docker compose -f deploy/compose.yaml config --quiet
 docker compose -f deploy/docker-compose.yml config --quiet
@@ -319,7 +342,7 @@ docker compose -f deploy/docker-compose.yml config --quiet
 docker tag sub2api-native:local "sub2api-native:rollback-$(date +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD)" 2>/dev/null || true
 docker compose -f deploy/compose.yaml build --pull=false
 
-deploy/check-gate-l.sh
+deploy/gate-l-expect.sh --check
 deploy/check-mailbox-handoff.sh
 docker compose -f deploy/docker-compose.yml up -d --no-build
 ~~~

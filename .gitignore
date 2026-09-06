@@ -72,6 +72,8 @@ outlookemail.env
 # 本地部署与测试输入（可能包含环境地址或凭据）
 deploy/.env
 deploy/outlookemail.env
+# 本机 Gate L 期望值与验收出处：抬升的只是本机，不提交也不代表共享基线
+deploy/gate-l.local
 
 # Generic local credentials, sessions, certificates, and database artifacts.
 # Keep these ignored even when a tool writes them outside the canonical data
