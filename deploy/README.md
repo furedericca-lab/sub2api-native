@@ -286,35 +286,28 @@ settings handoff reports a jump failure and the mailbox pool stops handing out
 accounts, because Sub2API keeps posting the stale value to
 `/api/extension/login` and the vendor rejects it with 401.
 
-Use one command instead of two manual edits:
+Do not edit either side by hand. Run one command, type the new password twice
+(no echo), and both sides move together:
 
 ~~~bash
-deploy/sync-mailbox-password.sh verify [--full]        # read-only; exits 1 on drift
-deploy/sync-mailbox-password.sh set   [--from-file P] [--recreate]   # new password, both sides
-deploy/sync-mailbox-password.sh adopt [--from-file P] [--recreate]   # UI already changed it, sync Sub2API
+deploy/sync-mailbox-password.sh
 ~~~
 
-`verify` asks the vendor's own bcrypt to compare the database hash against the
-effective `runtime.env` value inside the container and prints only a length and
-a boolean; it is safe to run in a health check and is the repair hint for the
-symptom above. `adopt` is fail-closed: it first proves the supplied password
-matches the database hash and writes nothing at all if it does not, which is the
-point of the tool. `set` resets the hash through the vendor's official
+It resets the hash through the vendor's official
 `scripts/reset_login_password.py` as the container `app` uid (never as root, so
-the database owner is preserved), verifies the new hash accepts the password,
-and only then syncs the copies, so a failed database step cannot leave a new
-kind of drift. `--recreate` re-runs both gates and recreates the container to
-clear the retired value from the process environment; it is optional because
-both sides are read per request.
+the database owner is preserved), confirms the new hash accepts the password,
+and only then writes the copies - so a failed database step cannot leave a new
+drift - and finishes by re-running the mailbox contract smoke. The script takes
+no arguments and reads no environment variable for the password, which comes
+only from the echoing-disabled prompt; no output ever contains it. Both sides
+are read per request, so no restart is required; if you want the retired value
+out of the container process environment, run `deploy/update.sh` or
+`docker restart sub2api-native` afterwards.
 
-The password is never taken as an argument or environment variable: it comes
-from an echoing-disabled interactive prompt or a `--from-file` path whose mode
-must be 600 and whose owner must be the current user, and no output ever
-contains it. Rotating `SECRET_KEY` is a different and larger operation - the
-vendor derives the Fernet key that encrypts stored `enc:` mailbox credentials
-from it with a fixed salt, so changing it without a rehearsed decrypt and
-re-encrypt migration permanently locks that data; this script deliberately
-touches only the login password.
+This is the login password only. `SECRET_KEY` is a different and larger matter:
+the vendor derives the Fernet key that encrypts stored `enc:` mailbox
+credentials from it with a fixed salt, so changing it without a rehearsed
+decrypt and re-encrypt migration permanently locks that data.
 
 ## Read-only Gate L assertion
 
