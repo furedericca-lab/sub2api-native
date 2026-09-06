@@ -11,8 +11,11 @@ from .sub2api_transport import Sub2ApiClient
 class Sub2ApiAccountSession:
     """One authenticated account operation boundary."""
 
-    def __init__(self, origin: str, email: str, password: str, *, proxies: Optional[dict[str, str]] = None, log_callback: Optional[Callable[[str], None]] = None) -> None:
-        self.solver = CamoufoxCaptchaSolver(log_callback=log_callback)
+    def __init__(self, origin: str, email: str, password: str, *, proxies: Optional[dict[str, str]] = None, log_callback: Optional[Callable[[str], None]] = None, cancel_callback: Optional[Callable[[], bool]] = None) -> None:
+        self.solver = CamoufoxCaptchaSolver(
+            log_callback=log_callback,
+            cancel_callback=cancel_callback,
+        )
         self.client = Sub2ApiClient(origin, timeout=30, proxies=proxies)
         try:
             auth = Sub2ApiAuthService(self.client, self.solver)

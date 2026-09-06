@@ -849,7 +849,7 @@ def start_browser(log_callback=None, geoip_override: Optional[bool] = None) -> T
     raise Exception(f"{engine_label} 启动失败: {last_exc}")
 
 
-def stop_browser(force=False):
+def stop_browser(force=False, log_callback=None):
     if _debug() and not force:
         return
     current = active_browser()
@@ -860,8 +860,10 @@ def stop_browser(force=False):
         return
     try:
         current.quit(del_data=True)
-    except BaseException:
-        pass
+    except BaseException as exc:
+        # 静默吞掉会让闲置浏览器无法归因，这里留一行痕迹。
+        if log_callback:
+            log_callback(f"[!] 关闭浏览器失败，可能残留实例: {str(exc)[:180]}")
     _cleanup_profile_dir(profile_dir)
 
 

@@ -292,6 +292,28 @@ class RegistrationJobCoordinator:
                     raise RuntimeError("已有注册任务在运行，禁止释放消费标记")
             yield
 
+    def try_acquire_transition_guard(self) -> bool:
+        """非阻塞拿到状态迁移 guard，供账户后台任务与注册任务互斥。
+
+        与 ``idle_guard`` 保持同一锁序（transition guard → _lock），因此持锁
+        期间不会有注册任务把状态置为 running。调用方必须是同一个线程，并在
+        结束时调用 ``release_transition_guard``。
+        """
+        if not self._transition_guard.acquire(blocking=False):
+            return False
+        with self._lock:
+            if self._running:
+                self._transition_guard.release()
+                return False
+        return True
+
+    def release_transition_guard(self) -> None:
+        try:
+            self._transition_guard.release()
+        except RuntimeError:
+            # 不是持锁线程或重复释放：宁可不破坏调用方，也不掩盖为业务失败。
+            pass
+
     def start(
         self,
         count: int = 1,

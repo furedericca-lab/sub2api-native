@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, Optional
 
 from backend.automation import session as browser_session
 from backend.automation.turnstile import get_turnstile_token
+from backend.registration.runtime import RegistrationCancelled, raise_if_cancelled
 
 from .sub2api_transport import require_http_url
 
@@ -22,10 +23,12 @@ class CamoufoxCaptchaSolver:
         attempts: int = 3,
         retry_delay: float = 10.0,
         log_callback: Optional[Callable[[str], None]] = None,
+        cancel_callback: Optional[Callable[[], bool]] = None,
     ) -> None:
         self.attempts = max(1, int(attempts))
         self.retry_delay = max(0.0, float(retry_delay))
         self.log_callback = log_callback
+        self.cancel_callback = cancel_callback
         self._page = None
 
     def _log(self, message: str) -> None:
@@ -119,6 +122,8 @@ class CamoufoxCaptchaSolver:
                     break
             except Exception as exc:
                 last_error = str(exc)[:300] or last_error
+            # 取消统一上抛 RegistrationCancelled，由调用方判定它是失败还是取消。
+            raise_if_cancelled(self.cancel_callback)
             if attempt < self.attempts:
                 self._log(f"[*] Cap 第 {attempt} 次未完成，等待后重试")
                 time.sleep(self.retry_delay)
@@ -127,7 +132,8 @@ class CamoufoxCaptchaSolver:
     def _solve_turnstile(self, settings: Dict[str, Any], page_url: str) -> str:
         try:
             return self._solve_turnstile_page(settings, page_url)
-        except CaptchaError:
+        except (CaptchaError, RegistrationCancelled):
+            # 取消不是验证码失败，必须原样上抛给调用方判定结论。
             raise
         except Exception as exc:
             raise CaptchaError(f"Turnstile 验证未完成: {str(exc)[:300]}") from exc
@@ -174,6 +180,12 @@ class CamoufoxCaptchaSolver:
             timeout=30_000,
         )
         try:
-            return get_turnstile_token(log_callback=self.log_callback)
+            return get_turnstile_token(
+                log_callback=self.log_callback,
+                cancel_callback=self.cancel_callback,
+            )
+        except RegistrationCancelled:
+            # 调用方停止不是验证码失败，原样上抛才能被归为 cancelled。
+            raise
         except Exception as exc:
             raise CaptchaError(f"Turnstile 验证未完成: {str(exc)[:300]}") from exc

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CalendarCheck, Download, KeyRound, Plus, RefreshCw, Search, Users, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 
 import { AccountDrawer } from "@/pages/account-pool/AccountDrawer";
-import { api, errorMessage, type AccountPoolItem, type Sub2apiProfile } from "@/lib/api";
+import { AccountIntakePanel } from "@/pages/account-pool/AccountIntakePanel";
+import { api, errorMessage, type AccountIntakeTask, type AccountPoolItem, type Sub2apiProfile } from "@/lib/api";
 import {
   Badge,
   Button,
@@ -43,9 +44,12 @@ export function AccountPoolPage() {
   const [busy, setBusy] = useState("");
   const [toast, setToast] = useState("");
   const [selected, setSelected] = useState<Record<number, boolean>>({});
+  const [intakeTasks, setIntakeTasks] = useState<AccountIntakeTask[]>([]);
+  const settledIntakeIds = useRef<Set<number>>(new Set());
+  const intakeSeeded = useRef(false);
   const selectedAccountId = Number(searchParams.get("account") || 0);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
       const [accounts, profileResult] = await Promise.all([api.accountPool(), api.sub2apiProfiles()]);
       setItems(accounts.accounts);
@@ -53,11 +57,56 @@ export function AccountPoolPage() {
     } catch (error) {
       setToast(errorMessage(error));
     }
-  };
+  }, []);
+
+  const refreshIntake = useCallback(async () => {
+    try {
+      const result = await api.accountIntakeTasks();
+      setIntakeTasks(result.tasks);
+    } catch (error) {
+      setToast(errorMessage(error));
+    }
+  }, []);
 
   useEffect(() => {
     void load();
-  }, []);
+    void refreshIntake();
+  }, [load, refreshIntake]);
+
+  const intakeActive = intakeTasks.some((task) => task.active);
+
+  useEffect(() => {
+    if (!intakeActive) return;
+    const timer = window.setInterval(() => void refreshIntake(), 2000);
+    return () => window.clearInterval(timer);
+  }, [intakeActive, refreshIntake]);
+
+  // 后台任务完成后负责刷新列表并提示一次；失败详情留在任务卡片里，不重复弹 toast。
+  useEffect(() => {
+    if (!intakeSeeded.current) {
+      if (!intakeTasks.length) return;
+      intakeSeeded.current = true;
+      intakeTasks.forEach((task) => {
+        if (!task.active) settledIntakeIds.current.add(task.id);
+      });
+      return;
+    }
+    let refresh = false;
+    intakeTasks.forEach((task) => {
+      if (task.active || settledIntakeIds.current.has(task.id)) return;
+      settledIntakeIds.current.add(task.id);
+      if (task.status === "succeeded") {
+        const summary = task.summary || {};
+        setToast(
+          `账户已验证并添加，同步 ${summary.synced ?? 0}/${summary.discovered ?? 0} 个密钥${summary.unavailable ? `，${summary.unavailable} 项暂不可用` : ""}`,
+        );
+        refresh = true;
+      } else if (task.status !== "cancelled" && task.status !== "timeout") {
+        refresh = true;
+      }
+    });
+    if (refresh) void load();
+  }, [intakeTasks, load]);
 
   const stats = useMemo(() => ({
     total: items.length,
@@ -101,15 +150,15 @@ export function AccountPoolPage() {
     setSearchParams(next, { replace: true });
   };
 
+  // 验证与密钥同步在后台执行：提交后立即返回，进度由任务卡片跟进。
   const addAccount = async () => {
     if (!addForm || busy) return;
     setBusy("add");
     try {
       const result = await api.addAccount(Number(addForm.profileId), addForm.email.trim(), addForm.password);
       setAddForm(null);
-      await load();
-      openAccount(result.account.id);
-      setToast(`账户已验证并添加，同步 ${result.synced}/${result.discovered} 个密钥${result.unavailable ? `，${result.unavailable} 项暂不可用` : ""}`);
+      setIntakeTasks((current) => [result.task, ...current.filter((item) => item.id !== result.task.id)]);
+      setToast("已加入后台任务，正在验证登录并同步密钥");
     } catch (error) {
       setToast(errorMessage(error));
     } finally {
@@ -272,11 +321,18 @@ export function AccountPoolPage() {
         <div className="border-t border-slate-200 px-4 py-3 text-xs text-slate-500">显示 {visible.length} / {items.length} 个账户</div>
       </section>
 
+      <AccountIntakePanel
+        tasks={intakeTasks}
+        onOpenAccount={openAccount}
+        onChanged={(message) => setToast(message)}
+        onRefresh={refreshIntake}
+      />
+
       {addForm ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/30 p-6" onMouseDown={(event) => event.target === event.currentTarget && setAddForm(null)}>
           <section role="dialog" aria-modal="true" aria-labelledby="add-account-title" className="w-full max-w-lg rounded-lg border border-slate-200 bg-white shadow-2xl">
             <header className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-              <div><h2 id="add-account-title" className="text-base font-semibold">添加账户</h2><p className="mt-1 text-xs text-slate-500">登录验证成功后创建账户并同步密钥。</p></div>
+              <div><h2 id="add-account-title" className="text-base font-semibold">添加账户</h2><p className="mt-1 text-xs text-slate-500">提交后在后台完成登录验证与密钥同步，可关窗口继续其它操作，进度在“添加账户任务”卡片跟进。</p></div>
               <Button size="icon" variant="ghost" aria-label="关闭" onClick={() => setAddForm(null)}><X className="h-4 w-4" /></Button>
             </header>
             <div className="space-y-4 p-5">
@@ -284,7 +340,7 @@ export function AccountPoolPage() {
               <div><Label htmlFor="account-email">邮箱</Label><Input id="account-email" className="mt-2" autoComplete="username" value={addForm.email} onChange={(event) => setAddForm({ ...addForm, email: event.target.value })} /></div>
               <div><Label htmlFor="account-password">密码</Label><Input id="account-password" className="mt-2" type="password" autoComplete="current-password" value={addForm.password} onChange={(event) => setAddForm({ ...addForm, password: event.target.value })} /></div>
             </div>
-            <footer className="flex justify-end gap-2 border-t border-slate-200 px-5 py-4"><Button variant="outline" onClick={() => setAddForm(null)}>取消</Button><Button disabled={!!busy || !addForm.profileId || !addForm.email.trim() || addForm.password.length < 8} onClick={() => void addAccount()}>验证并添加</Button></footer>
+            <footer className="flex justify-end gap-2 border-t border-slate-200 px-5 py-4"><Button variant="outline" onClick={() => setAddForm(null)}>取消</Button><Button disabled={!!busy || !addForm.profileId || !addForm.email.trim() || addForm.password.length < 8} onClick={() => void addAccount()}>{busy === "add" ? "提交中…" : "验证并添加"}</Button></footer>
           </section>
         </div>
       ) : null}

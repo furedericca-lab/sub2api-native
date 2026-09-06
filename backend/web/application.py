@@ -29,6 +29,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .account_exports import build_credentials_text
+from .account_jobs import (
+    AccountTaskContext,
+    AccountTaskDuplicate,
+    AccountTaskNotFound,
+    AccountTaskRunner,
+    AccountTaskSpec,
+    wait_for_slot,
+)
 from .jobs import job_coordinator
 from backend.integrations.proxy import resolve_proxy_url, validate_http_proxy_url
 from backend.mailbox import service as mailbox_service
@@ -618,6 +626,113 @@ def create_app() -> FastAPI:
             return 404 if "不存在" in str(exc) else 422
         return 502
 
+    # ------------------------------------------------------------ 添加账户后台任务
+    #
+    # 登录验证要启动 Camoufox、过 Turnstile 再访问上游，耗时以十秒计，因此
+    # 请求线程只入队，执行在单工作线程里完成；状态与日志驻留内存供控制台轮询。
+    account_intake = AccountTaskRunner()
+    account_intake_timeout = float(
+        os.environ.get("SUB2API_ACCOUNT_INTAKE_TIMEOUT_SECONDS", "300") or 300
+    )
+
+    def _intake_channel_acquire_once() -> bool:
+        """非阻塞占用账户远程通道：全局锁 + 注册任务状态迁移 guard。"""
+        if not _account_remote_guard.acquire(blocking=False):
+            return False
+        if not job_coordinator.try_acquire_transition_guard():
+            _account_remote_guard.release()
+            return False
+        return True
+
+    def _intake_release_channel() -> None:
+        job_coordinator.release_transition_guard()
+        _account_remote_guard.release()
+
+    def _intake_acquire(ctx: AccountTaskContext):
+        @contextmanager
+        def _slot():
+            wait_for_slot(
+                account_intake,
+                ctx,
+                _intake_channel_acquire_once,
+                busy_hint="已有账户远程操作或注册任务在执行，添加账户正在排队",
+                on_wait=lambda waiter: waiter.stage("排队等待账户通道"),
+            )
+            try:
+                yield
+            finally:
+                _intake_release_channel()
+
+        return _slot()
+
+    def _intake_browser_boundary(ctx: AccountTaskContext) -> None:
+        """Camoufox 会话按线程隔离；任务线程成对收尾，不给进程留闲置浏览器。"""
+        from backend.automation import session as browser_session
+
+        browser_session.stop_browser(force=True, log_callback=ctx.log)
+
+    def _intake_run(ctx: AccountTaskContext, task: Dict[str, Any]) -> Dict[str, Any]:
+        from backend.integrations.sub2api_account_operations import (
+            AccountOperationsService,
+        )
+
+        gr = _gr()
+        gr.load_config()
+        gr._wire_runtime_modules()
+        password = str((task.get("_secrets") or {}).get("password") or "")
+        service = AccountOperationsService(
+            gr.get_registration_repository(),
+            account_key_crypto,
+            proxies=gr.get_proxies(),
+            log_callback=ctx.log,
+            cancel_callback=ctx.cancelled,
+        )
+        account, summary = service.add_account(
+            int(task["profile_id"]), str(task["email"]), password, progress=ctx
+        )
+        summary_data = summary.as_dict()
+        ctx.stage(
+            f"密钥同步完成：{summary_data.get('synced', 0)}/{summary_data.get('discovered', 0)}"
+        )
+        return {"account_id": int(account.get("id") or 0), **summary_data}
+
+    def _intake_finish(
+        ctx: AccountTaskContext, task: Dict[str, Any], status: str
+    ) -> Optional[Dict[str, Any]]:
+        """补上 Account id；任务被取消时账户可能已经落库，需要让 UI 能跳转。"""
+        email = str(task.get("email") or "").strip().lower()
+        if not email:
+            return None
+        try:
+            rows = _gr().get_registration_repository().list_accounts(
+                profile_id=int(task.get("profile_id") or 0)
+            )
+        except Exception:
+            return None
+        for row in rows or []:
+            if str(row.get("email") or "").strip().lower() == email:
+                return {"account_id": int(row.get("id") or 0)}
+        return None
+
+    from backend.integrations.sub2api_account_operations import (
+        classify_account_operation_error,
+    )
+    from backend.registration.runtime import RegistrationCancelled
+
+    account_intake.register(
+        AccountTaskSpec(
+            kind="add_account",
+            run=_intake_run,
+            timeout_seconds=account_intake_timeout,
+            acquire=_intake_acquire,
+            before=_intake_browser_boundary,
+            after=_intake_browser_boundary,
+            on_finish=_intake_finish,
+            classify=classify_account_operation_error,
+            cancel_exceptions=(RegistrationCancelled,),
+        )
+    )
+
     @app.middleware("http")
     async def require_web_login(request: Request, call_next):
         if _auth_required_path(request.url.path):
@@ -667,7 +782,7 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     def _shutdown() -> None:
-        pass
+        account_intake.stop()
 
     @app.get("/api/health")
     def api_health() -> Dict[str, Any]:
@@ -1483,18 +1598,77 @@ def create_app() -> FastAPI:
         store = _gr().get_registration_repository()
         return {"ok": True, "accounts": store.list_accounts(profile_id=profile_id or "", status=status)}
 
-    @app.post("/api/account-pool")
+    @app.post("/api/account-pool", status_code=202)
     def api_account_pool_create(body: AccountCreateBody) -> Dict[str, Any]:
+        """入队一个「添加账户」后台任务，立即返回任务快照。
+
+        登录验证、建账与密钥同步都在后台工作线程完成；密码只留在内存任务对象，
+        不进入任务快照、日志或响应。
+        """
+        from backend.registration.verified_sites import get_verified_site
+
+        store = _gr().get_registration_repository()
+        email = str(body.email or "").strip()
+        profile = store.get_profile(body.profile_id)
+        if not profile:
+            raise HTTPException(status_code=404, detail="站点不存在")
+        if not get_verified_site(str((profile or {}).get("site_key") or "")):
+            raise HTTPException(status_code=422, detail="站点尚未验证，不能添加账户")
+        if not bool(profile.get("enabled")):
+            raise HTTPException(status_code=422, detail="站点已停用，不能添加账户")
         try:
-            with _account_operations() as service:
-                account, summary = service.add_account(
-                    body.profile_id, body.email, body.password
-                )
-            return {"ok": True, "account": account, **summary.as_dict()}
-        except Exception as exc:
-            if isinstance(exc, HTTPException):
-                raise
-            raise HTTPException(status_code=_account_operation_status(exc), detail=str(exc)[:300]) from exc
+            task = account_intake.submit(
+                "add_account",
+                payload={
+                    "profile_id": int(body.profile_id),
+                    "profile_name": str(profile.get("name") or ""),
+                    "email": email,
+                    "_secrets": {"password": str(body.password)},
+                },
+                dedupe_key=f"add_account:{int(body.profile_id)}:{email.lower()}",
+            )
+        except AccountTaskDuplicate as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"ok": True, "task": task}
+
+    @app.get("/api/account-pool/tasks")
+    def api_account_pool_tasks(limit: int = Query(10, ge=1, le=50)) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "tasks": account_intake.list_tasks(limit=limit),
+            "queue": account_intake.status(),
+        }
+
+    @app.get("/api/account-pool/tasks/{task_id}")
+    def api_account_pool_task(
+        task_id: int,
+        after_log_id: int = Query(0, ge=0),
+        log_limit: int = Query(120, ge=1, le=500),
+    ) -> Dict[str, Any]:
+        try:
+            return {"ok": True, "task": account_intake.get_task(
+                task_id, after_log_id=after_log_id, log_limit=log_limit
+            )}
+        except AccountTaskNotFound as exc:
+            raise HTTPException(status_code=404, detail="任务不存在或已被清理") from exc
+
+    @app.post("/api/account-pool/tasks/{task_id}/cancel")
+    def api_account_pool_task_cancel(task_id: int) -> Dict[str, Any]:
+        try:
+            return {"ok": True, "task": account_intake.cancel(task_id)}
+        except AccountTaskNotFound as exc:
+            raise HTTPException(status_code=404, detail="任务不存在或已被清理") from exc
+
+    @app.post("/api/account-pool/tasks/{task_id}/retry")
+    def api_account_pool_task_retry(task_id: int) -> Dict[str, Any]:
+        try:
+            return {"ok": True, "task": account_intake.retry(task_id)}
+        except AccountTaskNotFound as exc:
+            raise HTTPException(status_code=404, detail="任务不存在或已被清理") from exc
+        except AccountTaskDuplicate as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=410, detail=str(exc)) from exc
 
     @app.post("/api/account-pool/credentials-txt/download")
     def api_account_pool_credentials_txt_download(body: AccountIdsBody) -> StreamingResponse:

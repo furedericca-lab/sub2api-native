@@ -147,6 +147,37 @@ export type LogItem = {
   message: string;
 };
 
+export type AccountIntakeTask = {
+  id: number;
+  kind: string;
+  status: string;
+  stage: string;
+  message: string;
+  error_code: string;
+  profile_id: number;
+  profile_name: string;
+  email: string;
+  account_id: number;
+  summary: { discovered?: number; synced?: number; unavailable?: number; missing?: number };
+  attempt: number;
+  retried_from: number;
+  created_at?: number | null;
+  started_at?: number | null;
+  finished_at?: number | null;
+  elapsed_seconds: number;
+  queue_position: number;
+  active: boolean;
+  logs?: LogItem[];
+  log_cursor?: number;
+};
+
+export type AccountIntakeQueue = {
+  running: boolean;
+  current_task_id: number;
+  queued: number;
+  worker_alive: boolean;
+};
+
 export type AuthState = {
   enabled: boolean;
   setup_required?: boolean;
@@ -428,7 +459,11 @@ export const api = {
   accountCredentials: (accountId: number) => request<{ok:boolean;email:string;password:string}>(`/api/account-pool/${accountId}/credentials`),
   downloadAccountPoolCredentialsTxt: (ids: number[]) =>
     postDownload("/api/account-pool/credentials-txt/download", ids),
-  addAccount: (profileId: number, email: string, password: string) => request<{ok:boolean;account:AccountPoolItem;discovered:number;synced:number;unavailable:number;missing:number}>("/api/account-pool", {method:"POST",body:JSON.stringify({profile_id:profileId,email,password})}),
+  addAccount: (profileId: number, email: string, password: string) => request<{ok:boolean;task:AccountIntakeTask}>("/api/account-pool", {method:"POST",body:JSON.stringify({profile_id:profileId,email,password})}),
+  accountIntakeTasks: (limit = 10) => request<{ok:boolean;tasks:AccountIntakeTask[];queue:AccountIntakeQueue}>(`/api/account-pool/tasks?limit=${limit}`),
+  accountIntakeTask: (taskId: number, afterLogId = 0) => request<{ok:boolean;task:AccountIntakeTask}>(`/api/account-pool/tasks/${taskId}?after_log_id=${afterLogId}`),
+  cancelAccountIntakeTask: (taskId: number) => request<{ok:boolean;task:AccountIntakeTask}>(`/api/account-pool/tasks/${taskId}/cancel`, {method:"POST"}),
+  retryAccountIntakeTask: (taskId: number) => request<{ok:boolean;task:AccountIntakeTask}>(`/api/account-pool/tasks/${taskId}/retry`, {method:"POST"}),
   verifyAccount: (accountId: number) => request<{ok:boolean;account:AccountPoolItem}>(`/api/account-pool/${accountId}/verify`, {method:"POST"}),
   checkinPoolAccount: (accountId: number) => request<{ok:boolean;result:CheckinResult}>(`/api/account-pool/${accountId}/checkin`, {method:"POST"}),
   checkinPoolAccounts: (ids: number[]) => request<{ok:boolean;success:number;failure:number;items:Array<Record<string,any>>}>("/api/account-pool/checkin", {method:"POST",body:JSON.stringify({ids})}),
