@@ -143,10 +143,12 @@ class TurnstileBudgetTest(unittest.TestCase):
             )
         self.assertIn("人工交互挑战", str(raised.exception))
         self.assertLess(time.monotonic() - started, 30.0)
-        # 看门狗必须按预算挂上并解除，否则卡死的 Playwright 调用无人能打断
-        self.assertEqual(len(self.armed), 1)
-        self.assertAlmostEqual(self.armed[0], 5.01, places=3)
-        self.assertEqual(self.disarmed, [True])
+        # 看门狗必须按预算挂上并解除，否则卡死的 Playwright 调用无人能打断；
+        # 另外还有一个按“进度”续期的短 fuse，浏览器进程卡住时不等满预算。
+        self.assertEqual(len(self.armed), 2)
+        self.assertIn(5.01, [round(x, 3) for x in self.armed])
+        self.assertLessEqual(min(self.armed), 20.0)
+        self.assertEqual(len(self.disarmed), 2)
 
     def test_without_budget_behaviour_is_unchanged(self):
         with self.assertRaises(Exception):

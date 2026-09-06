@@ -47,6 +47,33 @@ def _poll_turnstile_token(
     # 点击和页面 JS 读取都会因此变慢甚至卡住，所以硬上限是挂钟预算而不是轮数。
     expired = False
 
+    # 进度看门狗：浏览器进程自己卡住时（实测有头 Camoufox 在无显示主机上会
+    # 出现 GPU 进程失败），带 timeout 的 Playwright 调用同样会阻塞到进程被回收，
+    # 调用级超时救不回来。所以这里只看“还有没有成功的轮次”：读到响应就续期，
+    # 连续十几秒读不到就把本会话浏览器回收，把操作员最坏等待从“预算+5s”压下来。
+    progress_timer: Optional[Callable[[], None]] = None
+    progress_rearm_at = 0.0
+    progress_profile_dir = current_profile_dir() if budget_seconds and budget_seconds > 0 else ""
+
+    def _rearm_progress_watchdog() -> None:
+        nonlocal progress_timer, progress_rearm_at
+        now = time.monotonic()
+        if not progress_profile_dir or now < progress_rearm_at:
+            return
+        progress_rearm_at = now + 5.0
+        if progress_timer is not None:
+            progress_timer()
+        progress_timer = arm_browser_watchdog(15.0, progress_profile_dir, log_callback)
+
+    def _stop_progress_watchdog() -> None:
+        nonlocal progress_timer
+        if progress_timer is not None:
+            progress_timer()
+            progress_timer = None
+
+    # 第一轮读取前先挂上，否则“启动完就卡住”这种最常见的形态反而没有进度定时器。
+    _rearm_progress_watchdog()
+
     for _ in range(0, TOTAL_ROUNDS):
         raise_if_cancelled(cancel_callback)
         if deadline is not None and time.monotonic() >= deadline:
@@ -66,9 +93,12 @@ try {
                 """
             )
             token = str(token or "").strip()
+            # 读到响应（哪怕是空串）就说明页面 JS 还活着，续期即可。
+            _rearm_progress_watchdog()
             if len(token) >= 80:
                 if log_callback:
                     log_callback(f"[*] Turnstile 已通过，token长度={len(token)}")
+                _stop_progress_watchdog()
                 return token
 
             # 直接点击（首次或间隔重试）；挑战框重建后很快可以再点，不必等 4 轮
@@ -88,6 +118,7 @@ try {
             pass
         sleep_with_cancel(POLL_INTERVAL, cancel_callback)
 
+    _stop_progress_watchdog()
     if expired:
         reason = (
             f"Turnstile 在 {budget_seconds:.0f}s 预算内未通过，"

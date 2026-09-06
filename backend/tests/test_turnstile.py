@@ -1,3 +1,4 @@
+import time
 import unittest
 from unittest import mock
 
@@ -62,6 +63,41 @@ class TurnstileClickTests(unittest.TestCase):
         self.assertTrue(page_click.call_args.kwargs.get("force"))
         # 无限等待的 mouse API 会吞掉整个有界预算，还要靠杀浏览器才能打断。
         raw_page.mouse.click.assert_not_called()
+
+    def test_progress_watchdog_uses_a_short_fuse_and_is_disarmed_on_success(self):
+        """浏览器卡住时按“有没有成功轮次”回收，不能等满预算。"""
+        armed = []
+        frame, raw_page = self._runtime()
+        frame.locator.return_value.click.side_effect = RuntimeError("stuck")
+        iframe = frame.frame_element.return_value
+        iframe.bounding_box.return_value = {"x": 1, "y": 2, "width": 300, "height": 65}
+        iframe.click.side_effect = RuntimeError("stuck")
+        runtime_page = mock.Mock(raw_page=raw_page)
+        runtime_page.run_js.side_effect = ["", "", "x" * 120]
+
+        def fake_arm(seconds, profile_dir, log_callback=None):
+            handle = mock.Mock()
+            armed.append((seconds, handle))
+            return handle
+
+        with mock.patch.object(turnstile, "active_page", lambda: runtime_page), mock.patch.object(
+            turnstile, "page", runtime_page
+        ), mock.patch.object(
+            turnstile, "current_profile_dir", lambda: "/tmp/fake-profile"
+        ), mock.patch.object(
+            turnstile, "arm_browser_watchdog", fake_arm
+        ):
+            token = turnstile._poll_turnstile_token(
+                log_callback=None,
+                cancel_callback=None,
+                deadline=time.monotonic() + 30.0,
+                budget_seconds=30.0,
+            )
+
+        self.assertEqual(token, "x" * 120)
+        self.assertTrue(armed)
+        self.assertTrue(all(seconds <= 20.0 for seconds, _ in armed), armed)
+        self.assertTrue(all(handle.call_count >= 1 for _, handle in armed), "成功路径必须解除回收定时器")
 
     def test_click_path_uses_no_unbounded_api(self):
         import inspect
