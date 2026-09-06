@@ -166,7 +166,7 @@ class SolverBudgetTest(unittest.TestCase):
         self.assertIsNone(CamoufoxCaptchaSolver._poll_budget(None))
 
     def test_attempt_budget_is_capped_and_reserved(self):
-        self.assertEqual(CamoufoxCaptchaSolver(deadline_callback=lambda: 300.0)._attempt_budget(), 180.0)
+        self.assertEqual(CamoufoxCaptchaSolver(deadline_callback=lambda: 300.0)._attempt_budget(), 120.0)
         self.assertEqual(CamoufoxCaptchaSolver(deadline_callback=lambda: 60.0)._attempt_budget(), 52.0)
 
     def test_poll_budget_leaves_room_to_finish(self):
@@ -194,16 +194,24 @@ class SolverBudgetTest(unittest.TestCase):
         raw_page = SimpleNamespace(route=lambda *a, **k: None, unroute=lambda *a, **k: None,
                                    goto=lambda *a, **k: None,
                                    wait_for_selector=lambda *a, **k: None)
+        armed = []
         with mock.patch.object(cap, "get_turnstile_token", _fake), mock.patch.object(
+            cap.browser_session,
+            "arm_browser_watchdog",
+            lambda seconds, profile_dir, log_callback=None: armed.append(seconds) or (lambda: None),
+        ), mock.patch.object(
             solver, "_ensure_page", lambda: SimpleNamespace(raw_page=raw_page)
         ):
             token = solver._solve_turnstile_page(
                 {"captcha_site_key": "k"}, "https://site.example/login"
             )
         self.assertEqual(token, "t" * 120)
-        # 渲染完就进入轮询，预算上限 60s；看门狗由外层尝试挂，避免重复回收
+        # 渲染完就进入轮询，预算上限 60s；外层看门狗只覆盖启动+渲染（≤55s），
+        # 轮询自己再挂一个，否则卡住要等到整个尝试到期（实测 180s）。
         self.assertAlmostEqual(seen.get("budget_seconds"), 60.0, places=1)
-        self.assertFalse(seen.get("arm_watchdog"))
+        self.assertTrue(seen.get("arm_watchdog", True))
+        self.assertEqual(len(armed), 1)
+        self.assertLessEqual(armed[0], 55.0)
 
 
     def test_launch_overrun_stops_instead_of_continuing(self):

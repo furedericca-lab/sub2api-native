@@ -73,7 +73,7 @@ class CamoufoxCaptchaSolver:
             return None
         if remaining <= 12.0:
             raise CaptchaError("账户任务剩余时间不足，已停止自动登录")
-        return min(180.0, remaining - 8.0)
+        return min(120.0, remaining - 8.0)
 
     @staticmethod
     def _poll_budget(attempt_deadline: Optional[float]) -> Optional[float]:
@@ -181,8 +181,11 @@ class CamoufoxCaptchaSolver:
             raise CaptchaError("验证码阶段超过任务时限，已停止自动登录（可重试）")
         disarm = None
         if attempt_deadline is not None:
+            # 外层看门狗只管“启动 + 渲染”这一段；token 轮询另有自己的看门狗。
+            # 否则一旦轮询被卡住，只能等到整个尝试的到期时间（实测 180s）才被打断。
+            render_allowance = min(50.0, max(1.0, attempt_deadline - time.monotonic()))
             disarm = browser_session.arm_browser_watchdog(
-                max(1.0, attempt_deadline - time.monotonic()) + 5.0,
+                render_allowance + 5.0,
                 browser_session.current_profile_dir(),
                 self.log_callback,
             )
@@ -249,7 +252,6 @@ class CamoufoxCaptchaSolver:
                 log_callback=self.log_callback,
                 cancel_callback=self.cancel_callback,
                 budget_seconds=self._poll_budget(attempt_deadline),
-                arm_watchdog=False,
             )
         except RegistrationCancelled:
             # 调用方停止不是验证码失败，原样上抛才能被归为 cancelled。
