@@ -621,6 +621,42 @@ class MailboxPasswordSyncToolTests(unittest.TestCase):
             check=False,
         )
 
+    def test_password_is_never_piped_into_a_heredoc_fed_python(self):
+        """`printf pw | python3 - <<PY` feeds the script on stdin, so the secret is lost
+        and an empty LOGIN_PASSWORD gets written."""
+        text = self.SCRIPT.read_text(encoding="utf-8")
+        self.assertIsNone(re.search(r"printf [^\n]*\|\s*python3 -\s*<<", text))
+        self.assertIn('trap \'rm -f "$pwfile"\' EXIT', text, "the temp password file must be cleaned up")
+        self.assertEqual(
+            text.count('rm -f "$pwfile"'),
+            2,
+            "the temp file must be removed once explicitly plus once by the trap; an earlier "
+            "extra removal starves every later step that reads it",
+        )
+        self.assertIn('PW_TMP="$pwfile"', text, "the password must reach the writers through the temp file")
+
+    def test_docker_exec_flags_precede_the_container_name(self):
+        """`docker exec <container> -e K=V cmd` makes docker run '-e' as the command (exit 127)."""
+        text = self.SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn('"$CONTAINER" -', text)
+        # The host temp file is invisible inside the container, so a container-side
+        # check must take the candidate on stdin instead of a -e path.
+        self.assertNotIn("-e PW_TMP", text)
+        self.assertIn("cand = sys.stdin.read().strip()", text)
+
+    def test_the_writer_does_not_interpret_backslashes_in_the_password(self):
+        """A replacement string would eat `\\` and `\\g<...>`; a function cannot."""
+        text = self.SCRIPT.read_text(encoding="utf-8")
+        self.assertIn('lambda _m: "LOGIN_PASSWORD=" + pw', text)
+        self.assertIsNone(re.search(r"re\.sub\([^\n]*\"LOGIN_PASSWORD=\" \+ pw\)", text))
+
+    def test_prompts_use_the_portable_read_form(self):
+        """`read -rs "var?prompt"` breaks with 'not a valid identifier'; prompt first."""
+        text = self.SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("IFS= read -rs pw", text)
+        self.assertIn("IFS= read -rs again", text)
+        self.assertIsNone(re.search(r"read\s+-rs\s+[\"'][^\"']+\?", text))
+
     def test_script_exists_and_parses(self):
         self.assertTrue(self.SCRIPT.is_file())
         self.assertTrue(os.access(self.SCRIPT, os.X_OK), "must be executable")
@@ -640,7 +676,8 @@ class MailboxPasswordSyncToolTests(unittest.TestCase):
         text = self.SCRIPT.read_text(encoding="utf-8")
         self.assertIn("/app/vendor/outlookEmail/scripts/reset_login_password.py", text)
         self.assertIn("-u 10001", text, "never write the vendor database as root")
-        self.assertIn("--dry-run-check-db", text, "resolve the live DB path before writing")
+        self.assertIn("test -f", text, "confirm the live database path exists before writing")
+        self.assertIn('OUTLOOKEMAIL_DATA_DIR/outlook_accounts.db', text)
         self.assertIn("os.chmod(tmp, stat.S_IMODE(st.st_mode))", text)
         self.assertIn("os.chown(tmp, st.st_uid, st.st_gid)", text)
         self.assertIn("check-outlookemail-contract.py", text, "must re-verify the HTTP contract")
