@@ -276,38 +276,21 @@ LAN plus loopback public target (reject), missing/empty public target
 
 ## Mailbox login password
 
-The mailbox login credential lives in two places that must always move together:
-the bcrypt hash in the OutlookEmail database (`settings.login_password`, the
-source of truth for login checks) and the copy Sub2API reads from
-`data/outlookemail/runtime.env` plus the fresh-install
-`deploy/outlookemail.env`. Editing only one side produces a very specific
-failure: the mailbox management UI still logs in, while the console mailbox
-settings handoff reports a jump failure and the mailbox pool stops handing out
-accounts, because Sub2API keeps posting the stale value to
-`/api/extension/login` and the vendor rejects it with 401.
-
-Do not edit either side by hand. Run one command, type the new password twice
-(no echo), and both sides move together:
+The mailbox login password lives twice: the bcrypt hash in the OutlookEmail
+database (`settings.login_password`) and the copy Sub2API reads from
+`data/outlookemail/runtime.env` and `deploy/outlookemail.env`. Editing one side
+only breaks the console mailbox-settings handoff with 401 while the mailbox
+management UI keeps logging in. Never edit either side by hand:
 
 ~~~bash
 deploy/sync-mailbox-password.sh
 ~~~
 
-It resets the hash through the vendor's official
-`scripts/reset_login_password.py` as the container `app` uid (never as root, so
-the database owner is preserved), confirms the new hash accepts the password,
-and only then writes the copies - so a failed database step cannot leave a new
-drift - and finishes by re-running the mailbox contract smoke. The script takes
-no arguments and reads no environment variable for the password, which comes
-only from the echoing-disabled prompt; no output ever contains it. Both sides
-are read per request, so no restart is required; if you want the retired value
-out of the container process environment, run `deploy/update.sh` or
-`docker restart sub2api-native` afterwards.
-
-This is the login password only. `SECRET_KEY` is a different and larger matter:
-the vendor derives the Fernet key that encrypts stored `enc:` mailbox
-credentials from it with a fixed salt, so changing it without a rehearsed
-decrypt and re-encrypt migration permanently locks that data.
+Type the new password twice. The script updates the database through the vendor's
+own reset entrypoint, verifies it, syncs both copies, and re-runs the mailbox
+contract; it takes no arguments and never prints the password. No restart is
+needed. `SECRET_KEY` is separate - the vendor derives the Fernet key for stored
+`enc:` mailbox data from it, so rotating it is not this command's business.
 
 ## Read-only Gate L assertion
 
