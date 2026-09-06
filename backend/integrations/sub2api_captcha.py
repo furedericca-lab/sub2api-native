@@ -161,7 +161,39 @@ class CamoufoxCaptchaSolver:
             # 取消不是验证码失败，必须原样上抛给调用方判定结论。
             raise
         except Exception as exc:
-            raise CaptchaError(f"Turnstile 验证未完成: {str(exc)[:300]}") from exc
+            raise self._failure(f"Turnstile 验证未完成: {str(exc)[:300]}", exc) from exc
+
+    def _failure(self, detail: str, exc: BaseException | None = None) -> CaptchaError:
+        """统一失败出口：先留现场图，再把原因上抛。"""
+        shot = self._capture_challenge_scene("turnstile-failed")
+        if shot:
+            detail = f"{detail}（挑战现场截图：{shot}）"
+        return CaptchaError(detail)
+
+    def _capture_challenge_scene(self, failure_type: str) -> str:
+        """把失败当时的挑战页存一张图，免得只能从日志里猜上游状态。
+
+        上游到底给的是普通复选框、“验证中”转圈还是直接拦截，只有现场能
+        定性；截图只写进日志与失败摘要，不影响任务结论。
+        """
+        if self._page is None:
+            return ""
+        try:
+            from backend.registration.engine import capture_failure_screenshot
+
+            path = capture_failure_screenshot(
+                batch_id=f"account-intake-{failure_type}",
+                worker_id=0,
+                email="turnstile",
+                failure_type=failure_type,
+                log_callback=None,
+            )
+        except Exception as exc:  # noqa: BLE001 - 取证失败不能改变任务结论
+            self._log(f"[Debug] 挑战现场截图失败: {str(exc)[:120]}")
+            return ""
+        if path:
+            self._log(f"[*] 挑战现场截图已保存: {path}")
+        return str(path or "")
 
     def _solve_turnstile_page(self, settings: Dict[str, Any], page_url: str) -> str:
         site_key = str(settings.get("captcha_site_key") or settings.get("turnstile_site_key") or "").strip()
@@ -173,12 +205,11 @@ class CamoufoxCaptchaSolver:
             raise CaptchaError(str(exc)) from exc
         raise_if_cancelled(self.cancel_callback)
         # 预算必须在启动浏览器前就算出来：冷启动可拖到分钟级，等到要 token 时
-        # 再看剩余时间已经保不住任务时限。
         budget = self._attempt_budget()
         attempt_deadline = time.monotonic() + budget if budget else None
         raw_page = self._ensure_page().raw_page
         if attempt_deadline is not None and time.monotonic() >= attempt_deadline:
-            raise CaptchaError("验证码阶段超过任务时限，已停止自动登录（可重试）")
+            raise self._failure("验证码阶段超过任务时限，已停止自动登录（可重试）")
         disarm = None
         if attempt_deadline is not None:
             # 外层看门狗只管“启动 + 渲染”这一段；token 轮询另有自己的看门狗。
@@ -195,7 +226,7 @@ class CamoufoxCaptchaSolver:
             )
         except BaseException as exc:
             if attempt_deadline is not None and time.monotonic() >= attempt_deadline:
-                raise CaptchaError(
+                raise self._failure(
                     "验证码阶段超过任务时限，已停止自动登录（可重试）"
                 ) from exc
             raise
@@ -257,4 +288,4 @@ class CamoufoxCaptchaSolver:
             # 调用方停止不是验证码失败，原样上抛才能被归为 cancelled。
             raise
         except Exception as exc:
-            raise CaptchaError(f"Turnstile 验证未完成: {str(exc)[:300]}") from exc
+            raise self._failure(f"Turnstile 验证未完成: {str(exc)[:300]}", exc) from exc
