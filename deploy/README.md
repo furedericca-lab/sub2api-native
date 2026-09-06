@@ -292,6 +292,35 @@ contract; it takes no arguments and never prints the password. No restart is
 needed. `SECRET_KEY` is separate - the vendor derives the Fernet key for stored
 `enc:` mailbox data from it, so rotating it is not this command's business.
 
+## Optional mailbox provider: cloud-mail
+
+OutlookEmail can use a self-hosted [cloud-mail](vendor/outlookEmail/docs/cloudmail.md)
+instance as one more temporary-mailbox provider. It is one instance, configured in the
+mailbox settings table - never in the repository, never in logs, and its credentials are
+never returned in clear. Fill it in the mailbox interface under settings,
+then use its self-test; the same shape is available over the API:
+
+~~~bash
+MAILBOX=http://$OUTLOOKEMAIL_PUBLIC_HOST:15000   # the mailbox service, see the table above
+# The interface obtains a CSRF token and sends it back as X-CSRFToken; do the same:
+CSRF_TOKEN=$(curl -s "$MAILBOX/api/csrf-token" | sed -n 's/.*"csrf_token":"\([^"]*\)".*/\1/p')
+curl -X POST "$MAILBOX/api/cloudmail/settings" \
+  -H "Content-Type: application/json" -H "X-CSRFToken: $CSRF_TOKEN" \
+  -d '{"enabled":true,"base_url":"https://mail-api.example.com","api_prefix":"/api","admin_email":"admin@example.com","admin_password":"...","domain":"example.com"}'
+curl -X POST "$MAILBOX/api/cloudmail/test" -H "X-CSRFToken: $CSRF_TOKEN"
+~~~
+
+Four things cost time if learned from scratch. `base_url` must be the **API** address, not
+the web UI domain - a web UI answers `200 text/html` where JSON is expected, which surfaces as
+"not valid JSON". `domain` must be a bare domain that the cloud-mail instance lists in its own
+`domain` configuration (usually the admin account's own domain); a value with a scheme, or
+a site domain, is rejected as an illegal address. The admin password field is never
+prefilled and blank means keep the stored one. Temporary mailboxes are created, read, and
+deleted through the existing temporary-mailbox interface with `provider=cloudmail`, and
+deleting one also deletes it on the cloud-mail instance. Finally, a Cloudflare-fronted
+instance may answer HTTP 403 error 1010 to `Python-urllib` while rejecting nothing else;
+that is a bot rule, not a bad credential, and the adapter uses `requests`.
+
 ## Read-only Gate L assertion
 
 check-gate-l.sh asserts the batch registration ceiling in the final rendered
