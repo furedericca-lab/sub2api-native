@@ -379,6 +379,30 @@ class GateLFailClosedTests(unittest.TestCase):
         )
         self.assertIn("SUB2API_GATE_L_EXPECTED", text)
 
+    def test_update_script_tags_the_previous_image_before_the_build_moves_local(self):
+        """build overwrites :local, so the rollback point must be taken first."""
+        text = (REPO_ROOT / "deploy" / "update.sh").read_text(encoding="utf-8")
+        build_at = text.index("compose.yaml build")
+        tag_at = text.index("docker tag sub2api-native:local")
+        self.assertLess(tag_at, build_at, "tag the outgoing image before the build retags :local")
+        self.assertIn("tag_current_image", text)
+
+    def test_rollback_pruning_stays_inside_its_own_naming_and_protects_used_images(self):
+        text = (REPO_ROOT / "deploy" / "update.sh").read_text(encoding="utf-8")
+        # Only script-created timestamped tags may ever be removed, so hand-named
+        # and historical rollback tags can never be swept up.
+        self.assertIn("rollback-[0-9]{8}-[0-9]{6}-", text)
+        self.assertIn('docker ps -aq --filter "ancestor=$image_id"', text)
+        self.assertLess(
+            text.index("prune_rollback_tags()"),
+            text.index("rollback-[0-9]{8}-[0-9]{6}-"),
+            "pruning must be defined before the first tag_current_image call uses it",
+        )
+        self.assertLess(
+            text.index("tag_current_image\n\ncd deploy"),
+            text.index("compose.yaml build"),
+        )
+
 
 class TrackedGeneratedFrontendTests(unittest.TestCase):
     """P1: front/dist is generated output, never tracked truth."""

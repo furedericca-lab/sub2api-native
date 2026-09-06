@@ -315,6 +315,8 @@ deploy/check-gate-l.sh
 deploy/check-mailbox-handoff.sh
 docker compose -f deploy/compose.yaml config --quiet
 docker compose -f deploy/docker-compose.yml config --quiet
+# the build retags :local, so keep the outgoing build addressable first
+docker tag sub2api-native:local "sub2api-native:rollback-$(date +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD)" 2>/dev/null || true
 docker compose -f deploy/compose.yaml build --pull=false
 
 deploy/check-gate-l.sh
@@ -326,6 +328,18 @@ update.sh is the normal repeatable update entry point. It performs the same
 pre-build and pre-APPLY gate, builds the pinned local source, starts only the
 image-only Compose service, waits for health, and runs the mailbox HTTP
 contract. It never pulls or moves the submodule automatically.
+
+Before every build update.sh tags the image that is currently
+`sub2api-native:local` as
+`sub2api-native:rollback-YYYYmmdd-HHMMSS-<short-sha>`, because the build itself
+moves the `:local` tag and the previous build becomes unaddressable; a `-dirty`
+suffix marks builds taken with tracked edits still uncommitted. Rollback is then
+`docker tag sub2api-native:rollback-<...> sub2api-native:local` followed by both
+gates and `up -d --no-build`, never a bare up. `ROLLBACK_KEEP` (default 5) caps
+how many of those timestamped tags are pruned afterwards: pruning only ever
+targets names the script itself produced, never a hand-named or historical
+rollback tag, and never an image a container still references. Set a larger
+value to retain more history, and check `df -h /` before a large build anyway.
 
 compose.yaml keeps build.network: host and forwards only shell HTTP_PROXY,
 HTTPS_PROXY, and NO_PROXY as build arguments. Use --pull=false; do not use

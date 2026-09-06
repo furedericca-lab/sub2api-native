@@ -60,6 +60,50 @@ deploy/check-gate-l.sh --expected "$GATE_L_EXPECTED" "${GATE_L_ACK_ARGS[@]}" \
 deploy/check-mailbox-handoff.sh deploy/compose.yaml deploy/docker-compose.yml \
   || fail "邮箱跳转门禁未通过，拒绝 build/recreate"
 
+# build 会把 :local 标签直接盖到新镜像上，上一版构建随即变得不可寻址，
+# 逐字节回滚能力就丢了。因此只要本地已经存在 :local，就在 build 前给它一个
+# 带时间戳与来源短 sha 的 rollback 标签（名字排序即时间排序）。
+tag_current_image() {
+  local image_id rollback_tag dirty=""
+  image_id="$(docker image inspect sub2api-native:local --format '{{.Id}}' 2>/dev/null || true)"
+  if [[ -z "$image_id" ]]; then
+    echo "[update] 本地没有 sub2api-native:local 镜像，跳过回滚标签（首次部署）"
+    return 0
+  fi
+  if ! git diff --quiet; then dirty="-dirty"; fi
+  rollback_tag="sub2api-native:rollback-$(date +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD)${dirty}"
+  docker tag sub2api-native:local "$rollback_tag"
+  echo "[update] 回滚标签 ${rollback_tag} (${image_id})"
+  prune_rollback_tags
+}
+
+# 只清理本脚本按 rollback-YYYYmmdd-HHMMSS-<sha> 命名产出的标签：历史或手工
+# 命名的回滚标签永远不进入删除集合；仍被任何容器（含已停止容器）引用的镜像
+# 也不删。ROLLBACK_KEEP 至少保留 1 个。
+prune_rollback_tags() {
+  local keep="${ROLLBACK_KEEP:-5}" tags tag image_id i
+  [[ "$keep" =~ ^[0-9]+$ ]] || keep=5
+  if (( keep < 1 )); then keep=1; fi
+  mapfile -t tags < <(
+    docker images --format '{{.Repository}}:{{.Tag}}' sub2api-native |
+      grep -E '^sub2api-native:rollback-[0-9]{8}-[0-9]{6}-' | sort -r
+  )
+  if (( ${#tags[@]} <= keep )); then return 0; fi
+  for (( i = keep; i < ${#tags[@]}; i++ )); do
+    tag="${tags[i]}"
+    image_id="$(docker image inspect "$tag" --format '{{.Id}}' 2>/dev/null || true)"
+    if [[ -n "$image_id" ]] && [[ -n "$(docker ps -aq --filter "ancestor=$image_id" 2>/dev/null)" ]]; then
+      echo "[update] 保留仍被容器引用的回滚标签 ${tag}"
+      continue
+    fi
+    if docker rmi "$tag" >/dev/null 2>&1; then
+      echo "[update] 已移除过旧回滚标签 ${tag}"
+    fi
+  done
+}
+
+tag_current_image
+
 cd deploy
 docker compose -f compose.yaml build --pull=false
 
