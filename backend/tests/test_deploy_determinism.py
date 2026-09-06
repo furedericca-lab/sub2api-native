@@ -607,6 +607,111 @@ class GateLExpectationPolicyTests(unittest.TestCase):
         self.assertEqual(probe.returncode, 0, "deploy/gate-l.local must stay ignored")
 
 
+class MailboxPasswordSyncToolTests(unittest.TestCase):
+    """One command keeps the vendor hash and the Sub2API copy in agreement."""
+
+    SCRIPT = REPO_ROOT / "deploy" / "sync-mailbox-password.sh"
+    COPIES = (
+        REPO_ROOT / "data" / "outlookemail" / "runtime.env",
+        REPO_ROOT / "deploy" / "outlookemail.env",
+    )
+
+    def _run(self, *args):
+        return subprocess.run(
+            [str(self.SCRIPT), *args],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def _deployed(self) -> bool:
+        if not all(path.is_file() for path in self.COPIES):
+            return False
+        probe = subprocess.run(
+            ["docker", "inspect", "sub2api-native"], capture_output=True, check=False
+        )
+        return probe.returncode == 0
+
+    @staticmethod
+    def _digests() -> dict[str, str]:
+        import hashlib
+
+        return {
+            str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in MailboxPasswordSyncToolTests.COPIES
+            if path.is_file()
+        }
+
+    def test_script_exists_and_parses(self):
+        self.assertTrue(self.SCRIPT.is_file())
+        self.assertTrue(os.access(self.SCRIPT, os.X_OK), "must be executable")
+        result = subprocess.run(
+            ["bash", "-n", str(self.SCRIPT)], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_password_is_never_a_command_line_value(self):
+        result = self._run("set", "--password", "synthetic")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--password", result.stdout + result.stderr)
+
+    def test_world_readable_password_file_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pw"
+            path.write_text("synthetic-password", encoding="utf-8")
+            os.chmod(path, 0o644)
+            result = self._run("adopt", "--from-file", str(path))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("600", result.stdout + result.stderr)
+
+    def test_adopt_writes_nothing_when_the_password_does_not_match(self):
+        if not self._deployed():
+            self.skipTest("requires a deployed host with the running container")
+        before = self._digests()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "pw"
+            path.write_text("deliberately-wrong-value-123", encoding="utf-8")
+            os.chmod(path, 0o600)
+            result = self._run("adopt", "--from-file", str(path))
+        self.assertNotEqual(result.returncode, 0, "a non-matching password must not sync")
+        self.assertIn("不匹配", result.stdout + result.stderr)
+        self.assertEqual(before, self._digests(), "fail-closed adopt must not touch either copy")
+
+    def test_verify_is_read_only(self):
+        if not self._deployed():
+            self.skipTest("requires a deployed host with the running container")
+        before = self._digests()
+        result = self._run("verify")
+        self.assertEqual(before, self._digests(), "verify must never write")
+        combined = result.stdout + result.stderr
+        self.assertIn("runtime.env", combined)
+        if result.returncode != 0:
+            # Drift must be explained and point at the repair, not just exit non-zero.
+            self.assertIn("adopt", combined)
+            self.assertIn("set", combined)
+
+    def test_database_write_goes_through_the_vendor_entrypoint_as_the_app_uid(self):
+        text = self.SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("/app/vendor/outlookEmail/scripts/reset_login_password.py", text)
+        self.assertIn("-u 10001", text, "never write the vendor database as root")
+        self.assertIn("--dry-run-check-db", text, "resolve the live DB path before writing")
+        self.assertIn("os.chmod(tmp, stat.S_IMODE(st.st_mode))", text)
+        self.assertIn("os.chown(tmp, st.st_uid, st.st_gid)", text)
+        self.assertIn("deploy/gate-l-expect.sh --check", text, "--recreate must pass both gates")
+        self.assertIn("check-mailbox-handoff.sh", text)
+        self.assertIsNone(
+            re.search(r"echo[^\n]*\$\{?pw", text),
+            "the password must never be echoed",
+        )
+
+    def test_readme_documents_the_two_copies_and_the_one_command(self):
+        readme = (REPO_ROOT / "deploy" / "README.md").read_text(encoding="utf-8")
+        self.assertIn("deploy/sync-mailbox-password.sh verify", readme)
+        self.assertIn("deploy/sync-mailbox-password.sh adopt", readme)
+        self.assertIn("settings.login_password", readme)
+
+
 class TrackedGeneratedFrontendTests(unittest.TestCase):
     """P1: front/dist is generated output, never tracked truth."""
 

@@ -274,6 +274,48 @@ The fixture matrix covers loopback direct mode, LAN IP, reachable hostname,
 LAN plus loopback public target (reject), missing/empty public target
 (reject), and wildcard public targets (reject).
 
+## Mailbox login password
+
+The mailbox login credential lives in two places that must always move together:
+the bcrypt hash in the OutlookEmail database (`settings.login_password`, the
+source of truth for login checks) and the copy Sub2API reads from
+`data/outlookemail/runtime.env` plus the fresh-install
+`deploy/outlookemail.env`. Editing only one side produces a very specific
+failure: the mailbox management UI still logs in, while the console mailbox
+settings handoff reports a jump failure and the mailbox pool stops handing out
+accounts, because Sub2API keeps posting the stale value to
+`/api/extension/login` and the vendor rejects it with 401.
+
+Use one command instead of two manual edits:
+
+~~~bash
+deploy/sync-mailbox-password.sh verify [--full]        # read-only; exits 1 on drift
+deploy/sync-mailbox-password.sh set   [--from-file P] [--recreate]   # new password, both sides
+deploy/sync-mailbox-password.sh adopt [--from-file P] [--recreate]   # UI already changed it, sync Sub2API
+~~~
+
+`verify` asks the vendor's own bcrypt to compare the database hash against the
+effective `runtime.env` value inside the container and prints only a length and
+a boolean; it is safe to run in a health check and is the repair hint for the
+symptom above. `adopt` is fail-closed: it first proves the supplied password
+matches the database hash and writes nothing at all if it does not, which is the
+point of the tool. `set` resets the hash through the vendor's official
+`scripts/reset_login_password.py` as the container `app` uid (never as root, so
+the database owner is preserved), verifies the new hash accepts the password,
+and only then syncs the copies, so a failed database step cannot leave a new
+kind of drift. `--recreate` re-runs both gates and recreates the container to
+clear the retired value from the process environment; it is optional because
+both sides are read per request.
+
+The password is never taken as an argument or environment variable: it comes
+from an echoing-disabled interactive prompt or a `--from-file` path whose mode
+must be 600 and whose owner must be the current user, and no output ever
+contains it. Rotating `SECRET_KEY` is a different and larger operation - the
+vendor derives the Fernet key that encrypts stored `enc:` mailbox credentials
+from it with a fixed salt, so changing it without a rehearsed decrypt and
+re-encrypt migration permanently locks that data; this script deliberately
+touches only the login password.
+
 ## Read-only Gate L assertion
 
 check-gate-l.sh asserts the batch registration ceiling in the final rendered
