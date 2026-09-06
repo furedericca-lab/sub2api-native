@@ -39,7 +39,7 @@ function Brand() {
       </div>
       <div className="min-w-0">
         <div className="truncate text-sm font-semibold tracking-tight text-slate-950">Sub2API Native</div>
-        <div className="truncate text-[11px] text-slate-500">站点聚合与 API 管理控制台</div>
+        <div className="truncate text-[11px] text-slate-500">站点聚合管理控制台</div>
       </div>
     </div>
   );

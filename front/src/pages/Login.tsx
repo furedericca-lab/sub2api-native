@@ -30,7 +30,7 @@ export function LoginPage({ setupRequired, onLoggedIn }: { setupRequired: boolea
       <section className="hidden flex-col justify-between border-r border-slate-200 bg-slate-900 p-10 text-white lg:flex xl:p-14">
         <div className="flex items-center gap-3">
           <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-white text-sm font-bold text-slate-900">S2</span>
-          <div><div className="font-semibold">Sub2API Native</div><div className="text-xs text-slate-400">站点聚合与 API 管理控制台</div></div>
+          <div><div className="font-semibold">Sub2API Native</div><div className="text-xs text-slate-400">站点聚合管理控制台</div></div>
         </div>
         <div className="max-w-md">
           <p className="text-sm font-medium text-sky-300">SUB2API NATIVE</p>
@@ -45,7 +45,7 @@ export function LoginPage({ setupRequired, onLoggedIn }: { setupRequired: boolea
       <section className="flex items-center justify-center px-4 py-8 sm:px-8">
         <form onSubmit={submit} className="w-full max-w-[440px] rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_18px_50px_-35px_rgba(15,23,42,.4)] sm:p-8">
           <div className="mb-8 lg:hidden">
-            <div className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-900 text-sm font-bold text-white">S2</span><div><div className="font-semibold text-slate-950">Sub2API Native</div><div className="text-xs text-slate-500">站点聚合与 API 管理控制台</div></div></div>
+            <div className="flex items-center gap-3"><span className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-900 text-sm font-bold text-white">S2</span><div><div className="font-semibold text-slate-950">Sub2API Native</div><div className="text-xs text-slate-500">站点聚合管理控制台</div></div></div>
           </div>
           <div className="mb-7">
             <p className="text-xs font-medium uppercase tracking-[.12em] text-sky-600">管理员</p>
